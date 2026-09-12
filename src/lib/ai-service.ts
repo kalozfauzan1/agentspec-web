@@ -3,19 +3,19 @@
  * Implements PRD Section 33: AI Generation Architecture
  */
 
-const API_BASE_URL = 'https://9router.nalarlabs.tech/v1';
-const API_KEY = process.env.NEXT_PUBLIC_9ROUTER_API_KEY || '';
+const API_BASE_URL = 'https://omniroute.nalarlabs.tech/v1';
+const API_KEY = process.env.NEXT_PUBLIC_OMNIRoute_API_KEY || '';
 
 // Model configuration for different tasks
 const MODELS = {
-  ANALYSIS: 'first',
-  CLARIFICATION: 'first',
-  PRD: 'first',
-  FEATURES: 'first',
-  ARCHITECTURE: 'first',
-  TASKS: 'first',
-  AGENT_INSTRUCTIONS: 'first',
-  EDIT: 'first'
+  ANALYSIS: 'auto/best-free',
+  CLARIFICATION: 'auto/best-free',
+  PRD: 'auto/best-free',
+  FEATURES: 'auto/best-free',
+  ARCHITECTURE: 'auto/best-free',
+  TASKS: 'auto/best-free',
+  AGENT_INSTRUCTIONS: 'auto/best-free',
+  EDIT: 'auto/best-free'
 };
 
 interface ChatMessage {
@@ -41,7 +41,7 @@ interface AIResponse {
 export class AIService {
   private async callAPI(prompt: AIPrompt): Promise<string> {
     if (!API_KEY) {
-      throw new Error('9Router API key is not configured. Set NEXT_PUBLIC_9ROUTER_API_KEY environment variable.');
+      throw new Error('OmniRoute API key is not configured. Set NEXT_PUBLIC_OMNIRoute_API_KEY environment variable.');
     }
 
     const response = await fetch(`${API_BASE_URL}/chat/completions`, {
