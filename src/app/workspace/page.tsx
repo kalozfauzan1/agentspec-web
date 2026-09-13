@@ -217,17 +217,25 @@ export default function WorkspacePage() {
               <h3 className="font-semibold mb-3">Recent Projects</h3>
               <div className="space-y-2">
                 {recentProjects.slice(0, 5).map((project) => (
-                  <button
+                  <div
                     key={project.id}
                     onClick={() => loadProject(project.id)}
-                    className="w-full flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg transition-colors text-left"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        loadProject(project.id);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    className="w-full flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg transition-colors text-left cursor-pointer"
                   >
                     <div>
                       <div className="font-medium">{project.name}</div>
                       <div className="text-sm text-gray-500">{new Date(project.createdAt).toLocaleDateString()}</div>
                     </div>
                     <Button variant="ghost" size="sm">Open</Button>
-                  </button>
+                  </div>
                 ))}
               </div>
             </CardContent>

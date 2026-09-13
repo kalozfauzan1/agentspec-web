@@ -61,6 +61,22 @@ export interface ProjectDefinition extends Omit<ProjectData, 'features' | 'requi
   };
 }
 
+function archValueToString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => (typeof item === 'string' ? item : archValueToString(item))).join(', ');
+  }
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    if (typeof o.name === 'string' && o.name) return o.name;
+    if (typeof o.recommended === 'string' && o.recommended) return o.recommended;
+    if (typeof o.userSelected === 'string' && o.userSelected) return o.userSelected;
+    return '-';
+  }
+  if (value == null) return '';
+  return String(value);
+}
+
 export interface AppState {
   // Current project state
   currentProject: ProjectDefinition | null;
@@ -78,6 +94,7 @@ export interface AppState {
   generationProgress: number;
   generationStep: string;
   generationError: string | null;
+  generationWarnings: string[];
   
   // Generated content
   prdContent: string;
@@ -120,6 +137,7 @@ export const useStore = create<AppState>((set, get) => ({
   generationProgress: 0,
   generationStep: '',
   generationError: null,
+  generationWarnings: [],
   prdContent: '',
   architectureData: null,
   agentInstructions: '',
@@ -225,7 +243,8 @@ export const useStore = create<AppState>((set, get) => ({
       isGenerating: true, 
       generationProgress: 0,
       generationStep: 'Analyzing your idea...',
-      generationError: null
+      generationError: null,
+      generationWarnings: []
     });
 
     try {
@@ -334,16 +353,16 @@ export const useStore = create<AppState>((set, get) => ({
         constraints: projectDefinition.constraints || [],
         nonGoals: projectDefinition.nonGoals || [],
         technicalPreferences: {
-          frontend: (flatArchitecture as any)?.frontend || 'Next.js',
-          backend: (flatArchitecture as any)?.backend || 'Node.js',
-          database: (flatArchitecture as any)?.database || 'PostgreSQL',
-          realtime: (flatArchitecture as any)?.realtime || 'WebSocket'
+          frontend: archValueToString((flatArchitecture as any)?.frontend) || 'Next.js',
+          backend: archValueToString((flatArchitecture as any)?.backend) || 'Node.js',
+          database: archValueToString((flatArchitecture as any)?.database) || 'PostgreSQL',
+          realtime: archValueToString((flatArchitecture as any)?.realtime) || 'WebSocket'
         },
         techStack: {
-          frontend: (flatArchitecture as any)?.frontend || 'Next.js',
-          backend: (flatArchitecture as any)?.backend || 'Node.js',
-          database: (flatArchitecture as any)?.database || 'PostgreSQL',
-          realtime: (flatArchitecture as any)?.realtime || 'WebSocket'
+          frontend: archValueToString((flatArchitecture as any)?.frontend) || 'Next.js',
+          backend: archValueToString((flatArchitecture as any)?.backend) || 'Node.js',
+          database: archValueToString((flatArchitecture as any)?.database) || 'PostgreSQL',
+          realtime: archValueToString((flatArchitecture as any)?.realtime) || 'WebSocket'
         },
         architectureData: flatArchitecture,
         implementationStrategy: projectDefinition.implementationStrategy || 'frontend-first',
@@ -360,7 +379,8 @@ export const useStore = create<AppState>((set, get) => ({
         features,
         isGenerating: false,
         generationProgress: 100,
-        generationStep: 'Complete!'
+        generationStep: 'Complete!',
+        generationWarnings: Array.isArray((data as any)?.warnings) ? (data as any).warnings as string[] : []
       });
 
       // Save to IndexedDB with full generated content

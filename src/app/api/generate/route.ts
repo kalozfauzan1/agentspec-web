@@ -67,10 +67,23 @@ export async function POST(request: NextRequest) {
 
     // Generate sequentially to avoid rate limiting
     const prd = await callWithRetry(() => aiService.generatePRD(fullDefinition));
-    const features = await callWithRetry(() => aiService.generateFeatures(fullDefinition));
+    let features = await callWithRetry(() => aiService.generateFeatures(fullDefinition));
+    if (!Array.isArray(features) || features.length === 0) {
+      features = await callWithRetry(() => aiService.generateFeatures(fullDefinition));
+    }
     const architecture = await callWithRetry(() => aiService.generateArchitecture(fullDefinition));
-    const tasks = await callWithRetry(() => aiService.generateTasks(fullDefinition, features));
+    let tasks = await callWithRetry(() => aiService.generateTasks(fullDefinition, features));
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      tasks = await callWithRetry(() => aiService.generateTasks(fullDefinition, features));
+    }
     const agentInstructions = await callWithRetry(() => aiService.generateAgentInstructions(fullDefinition, tasks));
+
+    const warnings: string[] = [];
+    if (!prd || (typeof prd === 'string' && prd.trim().length === 0)) warnings.push('prd');
+    if (!Array.isArray(features) || features.length === 0) warnings.push('features');
+    if (!architecture || (typeof architecture === 'object' && Object.keys(architecture).length === 0)) warnings.push('architecture');
+    if (!Array.isArray(tasks) || tasks.length === 0) warnings.push('tasks');
+    if (!agentInstructions || (typeof agentInstructions === 'string' && agentInstructions.trim().length === 0)) warnings.push('agentInstructions');
 
     return NextResponse.json({
       projectDefinition: fullDefinition,
@@ -78,7 +91,8 @@ export async function POST(request: NextRequest) {
       features,
       architecture,
       tasks,
-      agentInstructions
+      agentInstructions,
+      warnings
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

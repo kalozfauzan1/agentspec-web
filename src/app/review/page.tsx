@@ -19,7 +19,8 @@ export default function ProjectReviewPage() {
     isGenerating, 
     generationProgress,
     generationStep,
-    generationError
+    generationError,
+    generationWarnings = []
   } = useStore();
   const [generating, setGenerating] = useState(false);
 
@@ -102,6 +103,16 @@ export default function ProjectReviewPage() {
         )}
 
         {/* Success Panel */}
+        {generationWarnings.length > 0 && (
+          <Card className="shadow-md border border-amber-200 bg-amber-50 rounded-xl overflow-hidden mb-6">
+            <CardContent className="p-6">
+              <h2 className="text-lg font-semibold text-amber-900">Some sections came back empty</h2>
+              <p className="text-amber-800 mt-2">
+                Empty sections: {generationWarnings.join(', ')}
+              </p>
+            </CardContent>
+          </Card>
+        )}
         {isSuccess && (
           <Card className="shadow-md border border-green-200 bg-green-50 rounded-xl overflow-hidden mb-6">
             <CardContent className="p-6">

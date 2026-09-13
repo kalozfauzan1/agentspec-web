@@ -8,6 +8,28 @@ import { useEffect, useState } from "react";
 
 type DecisionStatus = 'User Selected' | 'Recommended' | 'Undecided';
 
+function archValueToString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => (typeof item === 'string' ? item : archValueToString(item))).join(', ');
+  }
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    if (typeof o.name === 'string' && o.name) return o.name;
+    if (typeof o.recommended === 'string' && o.recommended) return o.recommended;
+    if (typeof o.userSelected === 'string' && o.userSelected) return o.userSelected;
+    return '-';
+  }
+  if (value == null) return '';
+  return String(value);
+}
+
+function toDisplayList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((v) => archValueToString(v)).filter((s) => s.length > 0);
+  if (typeof value === 'string' && value) return [value];
+  return [];
+}
+
 export default function ArchitecturePage() {
   const { currentProject, loadLatestProject } = useStore();
   const [isLoading, setIsLoading] = useState(true);
@@ -35,35 +57,47 @@ export default function ArchitecturePage() {
   const decisions = {
     frontend: { 
       component: 'Frontend', 
-      technology: architectureData.frontend || techPrefs.frontend || 'Next.js', 
+      technology: archValueToString(architectureData.frontend) || archValueToString(techPrefs.frontend) || 'Next.js', 
       source: (architectureData.frontendSource || 'User Selected') as DecisionStatus 
     },
     backend: { 
       component: 'Backend', 
-      technology: architectureData.backend || techPrefs.backend || 'Node.js', 
+      technology: archValueToString(architectureData.backend) || archValueToString(techPrefs.backend) || 'Node.js', 
       source: (architectureData.backendSource || 'User Selected') as DecisionStatus 
     },
     database: { 
       component: 'Database', 
-      technology: architectureData.database || techPrefs.database || 'PostgreSQL', 
+      technology: archValueToString(architectureData.database) || archValueToString(techPrefs.database) || 'PostgreSQL', 
       source: (architectureData.databaseSource || 'Recommended') as DecisionStatus 
     },
     realtime: { 
       component: 'Realtime', 
-      technology: architectureData.realtime || techPrefs.realtime || 'WebSocket', 
+      technology: archValueToString(architectureData.realtime) || archValueToString(techPrefs.realtime) || 'WebSocket', 
       source: (architectureData.realtimeSource || 'Recommended') as DecisionStatus 
     },
     auth: { 
       component: 'Authentication', 
-      technology: architectureData.auth || 'JWT/Session', 
+      technology: archValueToString(architectureData.auth ?? architectureData.authentication) || 'JWT/Session', 
       source: (architectureData.authSource || 'Undecided') as DecisionStatus 
     },
     storage: { 
       component: 'Storage', 
-      technology: architectureData.storage || 'Cloud Storage', 
+      technology: archValueToString(architectureData.storage) || 'Cloud Storage', 
       source: (architectureData.storageSource || 'Recommended') as DecisionStatus 
     },
   };
+
+  const systemBoundariesRaw = (architectureData as any)?.systemBoundaries;
+  const systemInside = Array.isArray(systemBoundariesRaw?.inside) ? toDisplayList(systemBoundariesRaw.inside) : [];
+  const systemOutside = Array.isArray(systemBoundariesRaw?.outside) ? toDisplayList(systemBoundariesRaw.outside) : [];
+  const hasSystemBoundaries = systemInside.length > 0 || systemOutside.length > 0;
+
+  const dataFlowRaw = (architectureData as any)?.highLevelDataFlow;
+  const dataFlowSteps = Array.isArray(dataFlowRaw)
+    ? toDisplayList(dataFlowRaw)
+    : Array.isArray((dataFlowRaw as any)?.steps)
+      ? toDisplayList((dataFlowRaw as any).steps)
+      : [];
 
   const handleEdit = (component: string) => {
     const decision = decisions[component as keyof typeof decisions];
@@ -184,6 +218,30 @@ export default function ArchitecturePage() {
               <CardTitle className="text-base">System Boundaries</CardTitle>
             </CardHeader>
             <CardContent>
+              {hasSystemBoundaries ? (
+                <div className="text-sm text-gray-600 space-y-3">
+                  {systemInside.length > 0 && (
+                    <div>
+                      <p className="font-medium text-gray-700">Inside</p>
+                      <ul className="space-y-1 mt-1">
+                        {systemInside.map((item, i) => (
+                          <li key={`inside-${i}`}>• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {systemOutside.length > 0 && (
+                    <div>
+                      <p className="font-medium text-gray-700">Outside</p>
+                      <ul className="space-y-1 mt-1">
+                        {systemOutside.map((item, i) => (
+                          <li key={`outside-${i}`}>• {item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ) : (
               <ul className="text-sm text-gray-600 space-y-2">
                 <li>• Frontend: {decisions.frontend.technology} application</li>
                 <li>• Backend: {decisions.backend.technology} API server</li>
@@ -191,6 +249,7 @@ export default function ArchitecturePage() {
                 <li>• Realtime: {decisions.realtime.technology} for live updates</li>
                 <li>• Authentication: {decisions.auth.technology}</li>
               </ul>
+              )}
             </CardContent>
           </Card>
 
@@ -199,6 +258,13 @@ export default function ArchitecturePage() {
               <CardTitle className="text-base">High-Level Data Flow</CardTitle>
             </CardHeader>
             <CardContent>
+              {dataFlowSteps.length > 0 ? (
+              <div className="text-sm text-gray-600 space-y-2">
+                {dataFlowSteps.map((step, i) => (
+                  <div key={i}>{i + 1}. {step}</div>
+                ))}
+              </div>
+              ) : (
               <div className="text-sm text-gray-600 space-y-2">
                 <div>1. Client → API Gateway</div>
                 <div>2. API → Business Logic</div>
@@ -206,6 +272,7 @@ export default function ArchitecturePage() {
                 <div>4. WebSocket → Realtime Updates</div>
                 <div>5. Notifications → Users</div>
               </div>
+              )}
             </CardContent>
           </Card>
         </div>
