@@ -114,11 +114,73 @@ function generateArchitectureMarkdown(architecture: any, project?: any): string 
   }
   if (Array.isArray(data)) {
     if (data.length === 0) return md + '\nNo architecture details available.\n';
-    return md + '\n' + data.map((item) => `- ${formatValue(item)}`).join('\n') + '\n';
+    return md + '\n' + renderList(data as unknown[], 0) + '\n';
   }
   const entries = Object.entries(data as Record<string, unknown>);
   if (entries.length === 0) {
     return md + '\nNo architecture details available.\n';
+  }
+  const maxDepth = 4;
+  function indentFor(level: number): string {
+    return '  '.repeat(Math.max(0, level));
+  }
+  function renderNested(value: unknown, level: number): string {
+    if (level >= maxDepth) {
+      return `${indentFor(level)}- ${formatValue(value)}\n`;
+    }
+    if (Array.isArray(value)) {
+      return renderList(value as unknown[], level);
+    }
+    if (value !== null && typeof value === 'object') {
+      return renderObject(value as Record<string, unknown>, level);
+    }
+    return `${indentFor(level)}- ${formatValue(value)}\n`;
+  }
+  function renderList(items: unknown[], level: number): string {
+    if (items.length === 0) return 'None\n';
+    if (level >= maxDepth) {
+      return items.map((item) => `${indentFor(level)}- ${formatValue(item)}\n`).join('');
+    }
+    const allPrimitive = items.every(
+      (item) => item === null || item === undefined || typeof item !== 'object'
+    );
+    if (allPrimitive) {
+      return items.map((item) => `${indentFor(level)}- ${formatValue(item)}\n`).join('');
+    }
+    let out = '';
+    const indent = indentFor(level);
+    items.forEach((item, index) => {
+      if (item === null || item === undefined || typeof item !== 'object') {
+        out += `${indent}- ${formatValue(item)}\n`;
+      } else if (Array.isArray(item)) {
+        out += `${indent}${index + 1}. \n`;
+        out += renderList(item as unknown[], level + 1);
+      } else {
+        out += `${indent}${index + 1}. \n`;
+        out += renderObject(item as Record<string, unknown>, level + 1);
+      }
+    });
+    return out;
+  }
+  function renderObject(obj: Record<string, unknown>, level: number): string {
+    const objEntries = Object.entries(obj);
+    if (objEntries.length === 0) return `${indentFor(level)}None\n`;
+    if (level >= maxDepth) {
+      return objEntries
+        .map(([k, v]) => `${indentFor(level)}- **${k}**: ${formatValue(v)}\n`)
+        .join('');
+    }
+    let out = '';
+    const indent = indentFor(level);
+    for (const [k, v] of objEntries) {
+      if (v !== null && typeof v === 'object') {
+        out += `${indent}- **${k}**:\n`;
+        out += renderNested(v, level + 1);
+      } else {
+        out += `${indent}- **${k}**: ${formatValue(v)}\n`;
+      }
+    }
+    return out;
   }
   for (const [key, value] of entries) {
     const heading = key
@@ -130,16 +192,14 @@ function generateArchitectureMarkdown(architecture: any, project?: any): string 
       if (value.length === 0) {
         md += 'None\n';
       } else {
-        md += (value as unknown[]).map((item) => `- ${formatValue(item)}`).join('\n') + '\n';
+        md += renderList(value as unknown[], 0);
       }
     } else if (value !== null && typeof value === 'object') {
       const objEntries = Object.entries(value as Record<string, unknown>);
       if (objEntries.length === 0) {
         md += 'None\n';
       } else {
-        for (const [k, v] of objEntries) {
-          md += `- **${k}**: ${formatValue(v)}\n`;
-        }
+        md += renderObject(value as Record<string, unknown>, 0);
       }
     } else if (value === null || value === undefined) {
       md += 'N/A\n';
