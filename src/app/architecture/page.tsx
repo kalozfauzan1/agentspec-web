@@ -4,18 +4,32 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import Link from "next/link";
 import { useStore } from "@/lib/store";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type DecisionStatus = 'User Selected' | 'Recommended' | 'Undecided';
 
 export default function ArchitecturePage() {
-  const { currentProject } = useStore();
+  const { currentProject, loadLatestProject } = useStore();
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    loadLatestProject().finally(() => setIsLoading(false));
+  }, [loadLatestProject]);
   const [editingDecision, setEditingDecision] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [editStatus, setEditStatus] = useState<DecisionStatus>('Recommended');
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <p className="text-gray-500">Loading project...</p>
+      </div>
+    );
+  }
+
   // Build decisions from architecture data or project tech stack
-  const architectureData = (currentProject as any)?.architectureData || {};
+  const rawArchitectureData = (currentProject as any)?.architectureData || {};
+  const architectureData = rawArchitectureData?.architecture && typeof rawArchitectureData.architecture === 'object' ? rawArchitectureData.architecture : rawArchitectureData;
   const techPrefs = currentProject?.technicalPreferences as { frontend?: string; backend?: string; database?: string; realtime?: string } || {};
   
   const decisions = {

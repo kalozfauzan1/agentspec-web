@@ -4,11 +4,24 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import Link from "next/link";
 import { useStore } from "@/lib/store";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function WorkspacePage() {
-  const { currentProject, recentProjects, loadProject } = useStore();
+  const { currentProject, recentProjects, loadProject, loadLatestProject, prdContent, architectureData, features, tasks } = useStore();
   const [searchQuery, setSearchQuery] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    loadLatestProject().finally(() => setIsLoading(false));
+  }, [loadLatestProject]);
+
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-50">
+        <p className="text-gray-500">Loading project...</p>
+      </div>
+    );
+  }
 
   const sidebarItems = [
     { title: "Overview", link: "/workspace" },
@@ -38,11 +51,17 @@ export default function WorkspacePage() {
     { title: "Export", link: "/export" },
   ];
 
+  const hasGeneratedContent =
+    Boolean(prdContent) ||
+    Boolean(architectureData) ||
+    features.length > 0 ||
+    tasks.length > 0;
+
   const completionStats = {
-    prd: currentProject ? 100 : 0,
-    features: currentProject?.features?.length || 0,
-    architecture: currentProject ? 100 : 0,
-    tasks: (currentProject as any)?.tasks?.length || 0,
+    prd: prdContent ? 100 : 0,
+    features: features.length || currentProject?.features?.length || 0,
+    architecture: architectureData ? 100 : 0,
+    tasks: tasks.length,
     export: currentProject ? 100 : 0
   };
 
@@ -137,7 +156,7 @@ export default function WorkspacePage() {
         )}
 
         {/* Stats Grid */}
-        {currentProject && (
+        {currentProject && hasGeneratedContent && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
             <Card className="p-4">
               <div className="text-2xl font-bold text-blue-600">{completionStats.prd}%</div>
@@ -156,6 +175,18 @@ export default function WorkspacePage() {
               <div className="text-sm text-gray-500">Tasks</div>
             </Card>
           </div>
+        )}
+
+        {/* No generated content yet */}
+        {currentProject && !hasGeneratedContent && (
+          <Card className="shadow-md border border-gray-200 rounded-xl overflow-hidden mb-6">
+            <CardContent className="p-12 text-center">
+              <p className="text-gray-500 mb-4">This project has no generated specification yet. Generate it to see PRD, features, architecture, and tasks here.</p>
+              <Link href="/review">
+                <Button className="bg-blue-600 hover:bg-blue-700">Go to Review & Generate</Button>
+              </Link>
+            </CardContent>
+          </Card>
         )}
 
         {/* Project Summary */}

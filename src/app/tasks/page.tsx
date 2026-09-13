@@ -4,16 +4,29 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import Link from "next/link";
 import { useStore } from "@/lib/store";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type TaskStatus = 'pending' | 'in-progress' | 'completed';
 type Priority = 'low' | 'medium' | 'high' | 'critical';
 
 export default function TasksPage() {
-  const { currentProject, tasks } = useStore();
+  const { currentProject, tasks, loadLatestProject } = useStore();
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    loadLatestProject().finally(() => setIsLoading(false));
+  }, [loadLatestProject]);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<TaskStatus | 'all'>('all');
   const [filterPriority, setFilterPriority] = useState<Priority | 'all'>('all');
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <p className="text-gray-500">Loading project...</p>
+      </div>
+    );
+  }
 
   // Use real tasks from store, fallback to empty
   const tasksList = tasks.length > 0 

@@ -37,6 +37,7 @@ export interface Task {
   status?: 'pending' | 'in-progress' | 'completed';
   priority?: 'low' | 'medium' | 'high' | 'critical';
   phase?: string;
+  optional?: boolean;
 }
 
 export interface ClarificationQuestion {
@@ -104,6 +105,7 @@ export interface AppState {
   loadProject: (id: string) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   loadRecentProjects: () => Promise<void>;
+  loadLatestProject: () => Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -255,10 +257,27 @@ export const useStore = create<AppState>((set, get) => ({
       
       const data = await response.json();
 
-      // Parse features if needed
+      // Normalize architecture: unwrap nested { architecture: {...} } wrapper into a flat decisions object.
+      const rawArchitecture = (data as any)?.architecture;
+      const flatArchitecture =
+        rawArchitecture &&
+        typeof rawArchitecture === 'object' &&
+        (rawArchitecture as any).architecture &&
+        typeof (rawArchitecture as any).architecture === 'object'
+          ? (rawArchitecture as any).architecture
+          : rawArchitecture ?? null;
+
+      // Parse features if needed (accept bare array or {features} wrapper)
       let features: Feature[] = [];
-      if (Array.isArray(data.features)) {
-        features = data.features.map((f: any) => ({
+      const featuresSource: unknown = Array.isArray(data.features)
+        ? data.features
+        : data.features &&
+          typeof data.features === 'object' &&
+          Array.isArray((data.features as { features?: unknown }).features)
+        ? (data.features as { features: unknown[] }).features
+        : [];
+      if (Array.isArray(featuresSource)) {
+        features = (featuresSource as any[]).map((f: any) => ({
           id: f.id || f.featureId || `FEATURE-${Math.random().toString(36).substr(2, 9)}`,
           name: f.name || 'Unnamed Feature',
           purpose: f.purpose || '',
@@ -271,10 +290,17 @@ export const useStore = create<AppState>((set, get) => ({
         }));
       }
 
-      // Parse tasks if needed
+      // Parse tasks if needed (accept bare array or {tasks} wrapper)
       let tasks: Task[] = [];
-      if (Array.isArray(data.tasks)) {
-        tasks = data.tasks.map((t: any) => ({
+      const tasksSource: unknown = Array.isArray(data.tasks)
+        ? data.tasks
+        : data.tasks &&
+          typeof data.tasks === 'object' &&
+          Array.isArray((data.tasks as { tasks?: unknown }).tasks)
+        ? (data.tasks as { tasks: unknown[] }).tasks
+        : [];
+      if (Array.isArray(tasksSource)) {
+        tasks = (tasksSource as any[]).map((t: any) => ({
           id: t.id || `TASK-${Math.random().toString(36).substr(2, 9)}`,
           title: t.title || 'Untitled Task',
           description: t.description || '',
@@ -286,7 +312,8 @@ export const useStore = create<AppState>((set, get) => ({
           acceptanceCriteria: t.acceptanceCriteria || [],
           status: t.status || 'pending',
           priority: t.priority || 'medium',
-          phase: t.phase || 'General'
+          phase: t.phase || 'General',
+          optional: t.optional
         }));
       }
 
@@ -307,17 +334,18 @@ export const useStore = create<AppState>((set, get) => ({
         constraints: projectDefinition.constraints || [],
         nonGoals: projectDefinition.nonGoals || [],
         technicalPreferences: {
-          frontend: data.architecture?.frontend || 'Next.js',
-          backend: data.architecture?.backend || 'Node.js',
-          database: data.architecture?.database || 'PostgreSQL',
-          realtime: data.architecture?.realtime || 'WebSocket'
+          frontend: (flatArchitecture as any)?.frontend || 'Next.js',
+          backend: (flatArchitecture as any)?.backend || 'Node.js',
+          database: (flatArchitecture as any)?.database || 'PostgreSQL',
+          realtime: (flatArchitecture as any)?.realtime || 'WebSocket'
         },
         techStack: {
-          frontend: data.architecture?.frontend || 'Next.js',
-          backend: data.architecture?.backend || 'Node.js',
-          database: data.architecture?.database || 'PostgreSQL',
-          realtime: data.architecture?.realtime || 'WebSocket'
+          frontend: (flatArchitecture as any)?.frontend || 'Next.js',
+          backend: (flatArchitecture as any)?.backend || 'Node.js',
+          database: (flatArchitecture as any)?.database || 'PostgreSQL',
+          realtime: (flatArchitecture as any)?.realtime || 'WebSocket'
         },
+        architectureData: flatArchitecture,
         implementationStrategy: projectDefinition.implementationStrategy || 'frontend-first',
         createdAt: Date.now(),
         updatedAt: Date.now()
@@ -326,7 +354,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({
         currentProject: project,
         prdContent: data.prd || '',
-        architectureData: data.architecture || null,
+        architectureData: flatArchitecture,
         agentInstructions: data.agentInstructions || '',
         tasks,
         features,
@@ -335,8 +363,15 @@ export const useStore = create<AppState>((set, get) => ({
         generationStep: 'Complete!'
       });
 
-      // Save to IndexedDB
-      await db.saveProject(project as ProjectData);
+      // Save to IndexedDB with full generated content
+      await db.saveProject({
+        ...(project as ProjectData),
+        prdContent: data.prd || '',
+        architectureData: flatArchitecture,
+        generatedFeatures: features,
+        generatedTasks: tasks,
+        agentInstructions: data.agentInstructions || '',
+      });
       
       // Reload recent projects
       await get().loadRecentProjects();
@@ -373,7 +408,14 @@ export const useStore = create<AppState>((set, get) => ({
   loadProject: async (id) => {
     const project = await db.getProject(id);
     if (!project) throw new Error('Project not found');
-    set({ currentProject: project as ProjectDefinition });
+    set({
+      currentProject: project as ProjectDefinition,
+      prdContent: project.prdContent || '',
+      architectureData: project.architectureData || null,
+      agentInstructions: project.agentInstructions || '',
+      tasks: (project.generatedTasks as Task[]) || [],
+      features: (project.generatedFeatures as Feature[]) || (project.features as Feature[]) || [],
+    });
   },
 
   deleteProject: async (id) => {
@@ -385,5 +427,13 @@ export const useStore = create<AppState>((set, get) => ({
   loadRecentProjects: async () => {
     const projects = await db.getAllProjects();
     set({ recentProjects: projects as ProjectDefinition[] });
+  },
+
+  loadLatestProject: async () => {
+    await get().initialize();
+    const { currentProject, recentProjects, loadProject } = get();
+    if (!currentProject && recentProjects.length > 0) {
+      await loadProject(recentProjects[0].id);
+    }
   }
 }));

@@ -4,14 +4,27 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import Link from "next/link";
 import { useStore } from "@/lib/store";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function ExportPage() {
-  const { currentProject, prdContent, architectureData, agentInstructions, tasks, features } = useStore();
+  const { currentProject, prdContent, architectureData, agentInstructions, tasks, features, loadLatestProject } = useStore();
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    loadLatestProject().finally(() => setIsLoading(false));
+  }, [loadLatestProject]);
   const [exportFormat, setExportFormat] = useState<'zip' | 'individual'>('zip');
   const [exporting, setExporting] = useState(false);
   const [exportComplete, setExportComplete] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <p className="text-gray-500">Loading project...</p>
+      </div>
+    );
+  }
 
   const documents = [
     { name: 'README.md', description: 'Project overview and setup', size: '~1-2 KB' },

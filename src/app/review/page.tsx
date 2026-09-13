@@ -10,6 +10,10 @@ export default function ProjectReviewPage() {
   const { 
     currentIdea, 
     clarificationAnswers, 
+    clarificationQuestions,
+    currentProject,
+    features,
+    tasks,
     isClarificationComplete, 
     generateProject, 
     isGenerating, 
@@ -28,10 +32,30 @@ export default function ProjectReviewPage() {
     }
   };
 
-  // Get clarification answers for display
-  const getAnswer = (questionId: string) => {
-    return clarificationAnswers.find(a => a.questionId === questionId)?.answer || 'Not specified';
+  const getDynamicAnswer = (keyword: string): string => {
+    const matched = clarificationAnswers
+      .filter((a) => a.questionId.toLowerCase().includes(keyword.toLowerCase()))
+      .map((a) => a.answer);
+    return matched.join(", ");
   };
+
+  const getQuestionLabel = (questionId: string): string => {
+    const found = clarificationQuestions.find((q) => q.id === questionId);
+    return found ? found.question : questionId;
+  };
+
+  const projectName: string =
+    currentProject?.name || currentIdea?.split(' ').slice(0, 5).join(' ') || 'Your Project';
+  const featureCount: number = features.length;
+  const taskCount: number = tasks.length;
+
+  const isSuccess: boolean = !isGenerating && !generationError && generationProgress === 100;
+  const hasAnswers: boolean = clarificationAnswers.length > 0;
+
+  const platformValue: string = getDynamicAnswer('platform') || '—';
+  const usersValue: string = getDynamicAnswer('user') || '—';
+  const paymentValue: string = getDynamicAnswer('payment') || '—';
+  const featuresValue: string = getDynamicAnswer('feature') || '—';
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white flex items-start justify-center p-6 py-12">
@@ -77,6 +101,23 @@ export default function ProjectReviewPage() {
           </Card>
         )}
 
+        {/* Success Panel */}
+        {isSuccess && (
+          <Card className="shadow-md border border-green-200 bg-green-50 rounded-xl overflow-hidden mb-6">
+            <CardContent className="p-6">
+              <h2 className="text-xl font-semibold text-green-900">Generation Complete</h2>
+              <p className="text-green-800 mt-2">
+                {projectName}: {featureCount} features, {taskCount} tasks generated.
+              </p>
+              <Link href="/workspace" className="mt-4 inline-block">
+                <Button className="bg-green-600 hover:bg-green-700 text-white px-8 py-3 text-lg">
+                  Open Workspace
+                </Button>
+              </Link>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Main Project Card */}
         <Card className="shadow-md border border-gray-200 rounded-xl overflow-hidden mb-6">
           <CardHeader className="pb-4">
@@ -87,11 +128,11 @@ export default function ProjectReviewPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <span className="text-sm font-medium text-gray-500">Project Name</span>
-                <p className="text-base font-medium">{currentIdea?.split(' ').slice(0, 5).join(' ') || 'Your Project'}</p>
+                <p className="text-base font-medium">{projectName}</p>
               </div>
               <div>
                 <span className="text-sm font-medium text-gray-500">Platform</span>
-                <p className="text-base">{getAnswer('platform')}</p>
+                <p className="text-base">{platformValue}</p>
               </div>
             </div>
             
@@ -103,17 +144,33 @@ export default function ProjectReviewPage() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <span className="text-sm font-medium text-gray-500">Target Users</span>
-                <p className="text-base">{getAnswer('users')}</p>
+                <p className="text-base">{usersValue}</p>
               </div>
               <div>
                 <span className="text-sm font-medium text-gray-500">Payment System</span>
-                <p className="text-base">{getAnswer('payment')}</p>
+                <p className="text-base">{paymentValue}</p>
               </div>
             </div>
 
             <div>
               <span className="text-sm font-medium text-gray-500">Key Features</span>
-              <p className="text-base mt-1">{getAnswer('features')}</p>
+              <p className="text-base mt-1">{featuresValue}</p>
+            </div>
+
+            <div>
+              <span className="text-sm font-medium text-gray-500">Clarification Answers</span>
+              {hasAnswers ? (
+                <ul className="mt-2 space-y-1 text-sm">
+                  {clarificationAnswers.map((a) => (
+                    <li key={a.questionId} className="flex gap-2">
+                      <span className="font-medium text-gray-700">{getQuestionLabel(a.questionId)}:</span>
+                      <span className="text-gray-600">{a.answer}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-base mt-1">—</p>
+              )}
             </div>
           </CardContent>
         </Card>

@@ -4,11 +4,24 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import Link from "next/link";
 import { useStore } from "@/lib/store";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export default function FeaturesPage() {
-  const { currentProject } = useStore();
+  const { currentProject, loadLatestProject } = useStore();
   const [expandedFeature, setExpandedFeature] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    loadLatestProject().finally(() => setIsLoading(false));
+  }, [loadLatestProject]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <p className="text-gray-500">Loading project...</p>
+      </div>
+    );
+  }
 
   // Use real features from store, fallback to empty
   const features = currentProject?.features || [];

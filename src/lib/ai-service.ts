@@ -249,19 +249,23 @@ Return JSON only, no code fences or backticks.`
         {
           role: 'system',
           content: `Generate implementation tasks following frontend-first strategy by default.
-Each task must include: id, title, type (frontend/backend), featureId, dependencies, references, requirements, acceptanceCriteria.
+Every task MUST include: id (stable TASK-001, TASK-002, ...), title, description, type (frontend|backend|integration), phase (required concrete string, one of: Foundation, Frontend, Backend, Integration, Testing, Deployment), featureId (must reference a real feature ID from the input), dependencies (array of valid task IDs defined in this output, empty array if none), references, requirements, acceptanceCriteria, optional (boolean).
+Keep tasks ordered frontend-first with valid dependency IDs. Keep featureId references to real feature IDs. Keep JSON-only output.
+You MUST also emit tasks covering: database migrations plus seed data, PWA installability (manifest, service worker, install prompt), QRIS sandbox plus webhook testing, thermal printer compatibility matrix, and production deployment plus environment config.
+When the PRD/projectDefinition says dynamic QRIS is optional, mark QRIS gateway integration scope as Phase 2 optional by setting "optional": true on those integration tasks.
 
 Default order:
-1. Project Foundation
-2. Frontend Foundation
-3. Frontend Features
-4. Frontend Completion
-5. Backend Foundation
-6. Backend Features
-7. Integration
-8. Testing
+1. Project Foundation (phase Foundation)
+2. Frontend Foundation (phase Frontend)
+3. Frontend Features (phase Frontend)
+4. Frontend Completion (phase Frontend)
+5. Backend Foundation incl. migrations plus seed data (phase Backend)
+6. Backend Features (phase Backend)
+7. Integration incl. PWA, QRIS sandbox/webhook, printer matrix (phase Integration)
+8. Testing incl. QRIS sandbox plus webhook testing (phase Testing)
+9. Deployment incl. production deployment plus environment config (phase Deployment)
 
-Return ONLY a JSON array, no other text.`
+Return ONLY a JSON object shaped exactly {"tasks": [...]} with the same per-task fields above, no other text.`
         },
         {
           role: 'user',
@@ -274,13 +278,27 @@ Return ONLY a JSON array, no other text.`
 
     const result = await this.callAPI(prompt);
     try {
-      const parsed = JSON.parse(result);
-      return Array.isArray(parsed) ? parsed : [];
+      const parsed: unknown = JSON.parse(result);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { tasks?: unknown }).tasks)) {
+        return (parsed as { tasks: unknown[] }).tasks;
+      }
+      return [];
     } catch (e) {
-      const match = result.match(/\[[\s\S]*\]/);
-      if (match) {
+      const arrMatch = result.match(/\[[\s\S]*\]/);
+      if (arrMatch) {
         try {
-          return JSON.parse(match[0]);
+          return JSON.parse(arrMatch[0]);
+        } catch {}
+      }
+      const objMatch = result.match(/\{[\s\S]*\}/);
+      if (objMatch) {
+        try {
+          const parsedObj: unknown = JSON.parse(objMatch[0]);
+          if (Array.isArray(parsedObj)) return parsedObj;
+          if (parsedObj && typeof parsedObj === 'object' && Array.isArray((parsedObj as { tasks?: unknown }).tasks)) {
+            return (parsedObj as { tasks: unknown[] }).tasks;
+          }
         } catch {}
       }
       return [];

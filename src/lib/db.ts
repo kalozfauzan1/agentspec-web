@@ -4,7 +4,7 @@
  */
 
 const DB_NAME = 'agentspec-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'projects';
 
 export interface ProjectData {
@@ -27,6 +27,12 @@ export interface ProjectData {
   implementationStrategy: 'frontend-first' | 'module-first';
   createdAt: number;
   updatedAt: number;
+  // Optional generated content (added in DB v2, keeps v1 records readable)
+  prdContent?: string;
+  architectureData?: any;
+  generatedFeatures?: any[];
+  generatedTasks?: any[];
+  agentInstructions?: string;
 }
 
 export interface ClarificationData {
@@ -71,12 +77,29 @@ class IndexedDBService {
 
       request.onupgradeneeded = (event) => {
         const db = (event.target as IDBOpenDBRequest).result;
-        
-        // Create projects store with id as keyPath
+        const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
+
+        // Fresh install: create projects store with id as keyPath
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
           store.createIndex('createdAt', 'createdAt', { unique: false });
           store.createIndex('name', 'name', { unique: false });
+          return;
+        }
+
+        // Migration to v2: existing v1 records stay readable (schemaless).
+        // Only ensure indexes exist; no data rewrite required.
+        if (oldVersion < 2) {
+          const tx = request.transaction;
+          if (tx) {
+            const store = tx.objectStore(STORE_NAME);
+            if (!store.indexNames.contains('createdAt')) {
+              store.createIndex('createdAt', 'createdAt', { unique: false });
+            }
+            if (!store.indexNames.contains('name')) {
+              store.createIndex('name', 'name', { unique: false });
+            }
+          }
         }
       };
     });
