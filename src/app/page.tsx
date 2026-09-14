@@ -1,139 +1,299 @@
 "use client";
 
-import Link from 'next/link';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { useState, useEffect } from 'react';
-import { useStore } from '@/lib/store';
+import Link from "next/link";
+import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ArrowRight, FolderOpen, Import, Settings2, Sparkles, Trash2 } from "lucide-react";
+import { AppHeader } from "@/components/shell/app-header";
+import { Alert } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/field";
+import { EmptyState } from "@/components/ui/empty-state";
+import { Spinner } from "@/components/ui/spinner";
+import { useProjectStore } from "@/lib/store/project-store";
+import { useSettingsStore } from "@/lib/store/settings-store";
+import { formatRelative } from "@/lib/utils";
+import type { ProjectRecord } from "@/lib/schemas";
+
+const EXAMPLES = [
+  "Aplikasi komunitas perumahan dengan IPL, marketplace warga, pengumuman, pengaduan, dan tombol darurat",
+  "POS untuk kafe kecil: menu, transaksi, stok bahan, dan laporan harian",
+  "Marketplace jasa les privat: profil tutor, jadwal, pembayaran, dan ulasan",
+  "Aplikasi absensi karyawan dengan shift, izin, dan rekap bulanan",
+];
+
+const STATUS_LABEL: Record<ProjectRecord["status"], string> = {
+  draft: "Draft",
+  clarifying: "Klarifikasi",
+  review: "Review",
+  generating: "Generating",
+  ready: "Siap",
+};
 
 export default function NewProjectPage() {
-  const { currentIdea, setCurrentIdea, recentProjects, deleteProject, initialize } = useStore();
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const router = useRouter();
+  const { projects, hydrated, createProject, analyzeIdea, generateQuestions, removeProject, importProject } =
+    useProjectStore();
+  const provider = useSettingsStore((state) => state.settings.provider);
 
-  useEffect(() => {
-    initialize().then(() => setIsLoading(false));
-  }, [initialize]);
+  const [idea, setIdea] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ProjectRecord | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
-  const handleStartPlanning = () => {
-    if (currentIdea.trim()) {
-      // Navigate to clarification page via Link
+  const canStart = idea.trim().length >= 10 && !starting;
+
+  const handleStart = async () => {
+    if (!canStart) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const project = await createProject(idea);
+      await analyzeIdea(project.id);
+      await generateQuestions(project.id);
+      router.push(`/project/${project.id}/clarify`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Gagal memulai perencanaan.");
+      setStarting(false);
+    }
+  };
+
+  const handleImport = async (file: File) => {
+    setError(null);
+    try {
+      const text = await file.text();
+      const project = await importProject(text);
+      router.push(`/project/${project.id}/review`);
+    } catch {
+      setError("File project tidak bisa dibaca. Pastikan itu hasil export JSON dari AgentSpec.");
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
-      {/* Main Content */}
-      <main className="max-w-4xl mx-auto px-6 py-16">
-        {/* Header Section */}
-        <div className="text-center mb-12">
-          <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-100 text-blue-700 rounded-full text-sm font-medium mb-6">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            Start Building
-          </div>
-          <h1 className="text-5xl font-bold text-gray-900 mb-4 tracking-tight">
+    <div className="min-h-screen">
+      <AppHeader
+        right={
+          <>
+            <Badge tone={provider.mode === "live" ? "success" : "warning"}>
+              {provider.mode === "live" ? "AI Live" : "Mode Demo"}
+            </Badge>
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/settings">
+                <Settings2 />
+                Settings
+              </Link>
+            </Button>
+          </>
+        }
+      />
+
+      <main className="mx-auto w-full max-w-4xl px-6 pb-24 pt-14">
+        <div className="text-center">
+          <span className="inline-flex items-center gap-1.5 rounded-pill border border-primary-border bg-primary-soft px-3 py-1 text-[12px] font-medium text-primary">
+            <Sparkles className="size-3.5" />
+            Dari ide menjadi spesifikasi yang bisa dieksekusi
+          </span>
+          <h1 className="mt-5 text-[34px] font-semibold leading-tight tracking-tight text-foreground">
             What do you want to build?
           </h1>
-          <p className="text-xl text-gray-600 max-w-2xl mx-auto leading-relaxed">
-            Turn your software idea into a detailed specification package with AI assistance.
+          <p className="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed text-muted-foreground">
+            Tulis idemu dalam Bahasa Indonesia atau English. AgentSpec akan menyusun PRD, feature
+            specification, arsitektur, data model, API, task implementasi, dan AGENTS.md yang konsisten.
           </p>
         </div>
 
-        {/* Main Input Card */}
-        <Card className="shadow-lg border-0 bg-white rounded-2xl p-8 mb-8">
-          <div className="mb-6">
-            <label className="block text-sm font-semibold text-gray-700 mb-2">
-              Describe your product idea
-            </label>
-            <p className="text-sm text-gray-500 mb-2">
-              You can write in Indonesian, English, or a mixture — whichever feels most natural to you.
-            </p>
-            <textarea
-              value={currentIdea}
-              onChange={(e) => setCurrentIdea(e.target.value)}
-              placeholder="e.g., 'A residential community app that has IPL payments for monthly rent/utility collection, a marketplace, announcements, complaints, and a panic button'"
-              className="w-full h-32 resize-none border border-gray-200 rounded-xl p-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-gray-50 hover:bg-white transition-colors"
-            />
-            <p className="text-sm text-gray-400 mt-2">
-              Accepted: short descriptions, long paragraphs, bullet lists, with or without technical preferences.
-            </p>
-          </div>
-
-          <Link href="/clarification">
-            <Button 
-              className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 transition-all font-medium py-3 px-6 rounded-xl shadow-md hover:shadow-lg"
-              disabled={!currentIdea.trim()}
-            >
-              Start Planning
-              <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-              </svg>
-            </Button>
-          </Link>
-        </Card>
-
-        {/* Recent Projects Section */}
-        {!isLoading && recentProjects.length > 0 && (
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-800">
-                Recent Projects
-              </h3>
-              <span className="text-sm text-gray-500">{recentProjects.length} projects</span>
+        <Card className="mt-9">
+          <CardContent className="space-y-4">
+            <div>
+              <label htmlFor="idea" className="text-[13px] font-medium text-foreground-soft">
+                Deskripsi produk
+              </label>
+              <Textarea
+                id="idea"
+                value={idea}
+                onChange={(event) => setIdea(event.target.value)}
+                rows={6}
+                placeholder="Contoh: Saya ingin membuat aplikasi komunitas perumahan dengan fitur pembayaran IPL, marketplace warga, pengumuman, pengaduan, dan tombol darurat. Backend pakai Laravel, database MySQL."
+                className="mt-2 resize-y"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void handleStart();
+                }}
+              />
+              <p className="mt-2 text-xs text-muted-foreground">
+                Boleh singkat, panjang, berupa poin-poin, dengan atau tanpa preferensi teknologi.
+              </p>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {recentProjects.map((project) => (
-                <Card key={project.id} className="hover:shadow-md transition-shadow border-0 bg-white rounded-xl overflow-hidden group relative">
-                  <CardContent className="p-5">
-                    <div className="flex items-start gap-3">
-                      <div className="w-10 h-10 bg-gradient-to-br from-blue-100 to-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                        </svg>
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-semibold text-gray-900 truncate">{project.name}</h4>
-                        <p className="text-sm text-gray-500 mt-1 line-clamp-2">{project.summary}</p>
-                        <p className="text-xs text-gray-400 mt-2">
-                          {new Date(project.createdAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                    </div>
-                    
-                    {/* Delete button */}
-                    <button
-                      onClick={() => setShowDeleteConfirm(project.id)}
-                      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1 hover:bg-red-100 rounded"
-                    >
-                      <svg className="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
-                  </CardContent>
-                  
-                  {showDeleteConfirm === project.id && (
-                    <div className="absolute inset-0 bg-white/90 flex items-center justify-center gap-2 p-4">
-                      <span className="text-sm text-gray-600">Delete?</span>
-                      <Button size="sm" variant="destructive" onClick={() => { deleteProject(project.id); setShowDeleteConfirm(null); }}>
-                        Delete
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => setShowDeleteConfirm(null)}>
-                        Cancel
-                      </Button>
-                    </div>
-                  )}
-                </Card>
+
+            <div className="flex flex-wrap gap-2">
+              {EXAMPLES.map((example) => (
+                <button
+                  key={example}
+                  type="button"
+                  onClick={() => setIdea(example)}
+                  className="rounded-pill border border-border bg-surface-muted px-3 py-1.5 text-left text-[12px] text-muted-foreground transition-colors hover:border-primary-border hover:bg-primary-soft hover:text-primary"
+                >
+                  {example.length > 64 ? `${example.slice(0, 62)}…` : example}
+                </button>
               ))}
             </div>
-          </div>
-        )}
 
-        {isLoading && (
-          <div className="text-center text-gray-400 py-8">Loading projects...</div>
-        )}
+            {error && (
+              <Alert tone="danger" title="Tidak bisa memulai">
+                {error}
+                {provider.mode === "live" ? null : (
+                  <>
+                    {" "}
+                    Mode demo tidak butuh API key, jadi error ini berarti ada masalah lain.
+                  </>
+                )}
+              </Alert>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <p className="text-xs text-muted-foreground">
+                Langkah berikutnya: pertanyaan klarifikasi, lalu review project definition.
+              </p>
+              <Button size="lg" onClick={handleStart} disabled={!canStart}>
+                {starting ? <Spinner /> : null}
+                {starting ? "Menganalisis ide…" : "Start Planning"}
+                {!starting && <ArrowRight />}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <section className="mt-12">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-[15px] font-semibold tracking-tight text-foreground">
+                Recent Projects
+              </h2>
+              <p className="mt-0.5 text-[13px] text-muted-foreground">
+                Proyek tersimpan lokal di browser ini.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => fileInput.current?.click()}>
+              <Import />
+              Import Project
+            </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) void handleImport(file);
+                event.target.value = "";
+              }}
+            />
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {!hydrated && (
+              <Card>
+                <CardContent className="flex items-center gap-3 text-sm text-muted-foreground">
+                  <Spinner />
+                  Memuat project lokal…
+                </CardContent>
+              </Card>
+            )}
+
+            {hydrated && projects.length === 0 && (
+              <EmptyState
+                icon={<FolderOpen className="size-5" />}
+                title="Belum ada project"
+                description="Mulai dari ide di atas. Setelah dibuat, project akan muncul di sini dan tetap tersimpan walau browser di-refresh."
+              />
+            )}
+
+            {projects.map((project) => (
+              <Card key={project.id} className="transition-colors hover:border-border-strong">
+                <CardContent className="flex flex-wrap items-start justify-between gap-4 py-4">
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => router.push(`/project/${project.id}/review`)}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold text-foreground">
+                        {project.definition?.name ?? project.idea.slice(0, 60)}
+                      </span>
+                      <Badge tone={project.status === "ready" ? "success" : "neutral"}>
+                        {STATUS_LABEL[project.status]}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[13px] leading-relaxed text-muted-foreground">
+                      {project.definition?.summary ?? project.idea}
+                    </p>
+                    <p className="mt-2 text-[11px] text-faint-foreground">
+                      {project.artifacts.features.length} feature · {project.artifacts.tasks.length} task ·
+                      diperbarui {formatRelative(project.updatedAt)}
+                    </p>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    {project.status === "ready" ? (
+                      <Button size="sm" asChild>
+                        <Link href={`/project/${project.id}`}>Buka Workspace</Link>
+                      </Button>
+                    ) : (
+                      <Button size="sm" asChild>
+                        <Link href={`/project/${project.id}/review`}>Lanjutkan</Link>
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Hapus project"
+                      onClick={() => setDeleteTarget(project)}
+                    >
+                      <Trash2 className="text-danger" />
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
       </main>
+
+      <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Hapus project ini?</DialogTitle>
+            <DialogDescription>
+              Project beserta seluruh dokumen yang sudah dihasilkan akan dihapus dari browser ini.
+              Tindakan ini tidak bisa dibatalkan.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)}>
+              Batal
+            </Button>
+            <Button
+              variant="danger"
+              onClick={async () => {
+                if (deleteTarget) await removeProject(deleteTarget.id);
+                setDeleteTarget(null);
+              }}
+            >
+              Hapus project
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

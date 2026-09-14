@@ -1,1 +1,114 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --color-canvas: #f7f8fb;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8fafc;
+  --color-surface-subtle: #f3f5fa;
+
+  --color-border: #e6e8ef;
+  --color-border-strong: #d5d9e4;
+
+  --color-foreground: #0f172a;
+  --color-foreground-soft: #334155;
+  --color-muted-foreground: #64748b;
+  --color-faint-foreground: #94a3b8;
+
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-soft: #eef1fe;
+  --color-primary-border: #c7cdfb;
+
+  --color-success: #047857;
+  --color-success-soft: #ecfdf5;
+  --color-success-border: #a7f3d0;
+
+  --color-warning: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-warning-border: #fde68a;
+
+  --color-danger: #b91c1c;
+  --color-danger-soft: #fef2f2;
+  --color-danger-border: #fecaca;
+
+  --color-neutral-soft: #f1f5f9;
+  --color-ring: #a5b4fc;
+
+  --radius-control: 10px;
+  --radius-card: 14px;
+  --radius-panel: 18px;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.05);
+  --shadow-raised: 0 6px 20px rgba(15, 23, 42, 0.08);
+  --shadow-overlay: 0 24px 60px rgba(15, 23, 42, 0.18);
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+  }
+
+  ::selection {
+    background-color: var(--color-primary-soft);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
+
+@utility scrollbar-slim {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background-color: var(--color-border-strong);
+    border-radius: var(--radius-pill);
+  }
+
+  &::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+}
+
+@utility text-balance-pretty {
+  text-wrap: pretty;
+}
+
+@keyframes agentspec-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@utility animate-enter {
+  animation: agentspec-fade-in 180ms ease-out both;
+}
