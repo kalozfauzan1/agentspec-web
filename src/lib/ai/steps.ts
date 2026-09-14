@@ -242,30 +242,27 @@ interface TaskBatch {
   features: FeatureSpec[];
 }
 
-/**
- * Providers often cap the completion at a few thousand tokens, so a whole
- * implementation plan cannot come back in one answer. The plan is requested one
- * phase group at a time; every batch sees the task ids created before it, which
- * keeps cross-phase dependencies valid.
- */
-function taskBatches(
+function taskBatchStages(
   definition: ProjectDefinition,
   features: FeatureSpec[],
-): TaskBatch[] {
+): TaskBatch[][] {
   if (definition.implementation.strategy === "module-first") {
-    return [
+    const planning = [
       { label: "Foundation", phases: ["Foundation"], features: [] },
       ...features.map((feature) => ({
         label: `${feature.name} module`,
         phases: [feature.name],
         features: [feature],
       })),
-      { label: "Integration and validation", phases: ["Integration", "Testing & Validation"], features },
+    ];
+    return [
+      ...chunk(planning, 6),
+      [{ label: "Integration and validation", phases: ["Integration", "Testing & Validation"], features }],
     ];
   }
 
   const groups = chunk(features, 4);
-  return [
+  const planning = [
     {
       label: "Project and frontend foundation",
       phases: ["Project Foundation", "Frontend Foundation"],
@@ -276,22 +273,40 @@ function taskBatches(
       phases: ["Frontend Features"],
       features: group,
     })),
-    {
-      label: "Backend foundation",
-      phases: ["Backend Foundation"],
-      features: [],
-    },
+    { label: "Backend foundation", phases: ["Backend Foundation"], features: [] },
     ...groups.map((group, index) => ({
       label: `Backend features (part ${index + 1} of ${groups.length})`,
       phases: ["Backend Features"],
       features: group,
     })),
-    {
+  ];
+
+  return [
+    ...chunk(planning, 6),
+    [{
       label: "Frontend completion, integration and validation",
       phases: ["Frontend Completion", "Integration", "Testing & Validation"],
       features,
-    },
+    }],
   ];
+}
+
+function rebaseTaskIds(tasks: ImplementationTask[], start: number): ImplementationTask[] {
+  const format = (value: number) => `TASK-${String(value).padStart(3, "0")}`;
+  const idMap = new Map<string, string>();
+
+  tasks.forEach((task, index) => {
+    const raw = task.id.toUpperCase().trim();
+    if (!idMap.has(raw)) idMap.set(raw, format(start + index));
+  });
+
+  return tasks.map((task, index) => ({
+    ...task,
+    id: format(start + index),
+    dependencies: task.dependencies.map((dependency) => (
+      idMap.get(dependency.toUpperCase().trim()) ?? dependency
+    )),
+  }));
 }
 
 async function generate<T>(params: {
@@ -660,30 +675,43 @@ export async function runStep(
         });
         collected = result.tasks;
       } else {
-        const batches = taskBatches(definition, features);
-        for (const [index, batch] of batches.entries()) {
+        const stages = taskBatchStages(definition, features);
+        const total = stages.flat().length;
+        let completedBatches = 0;
+
+        for (const stage of stages) {
           const knownTasks = collected.map((task) => ({ id: task.id, title: task.title }));
-          await runBatch(`Task ${batch.label}`, warnings, async () => {
-            const result = await generate({
-              step,
-              config,
-              schema: taskSchemaShape,
-              prompt: promptTasks(definition, batch.features.length > 0 ? batch.features : features, architecture, {
-                index: index + 1,
-                total: batches.length,
-                label: batch.label,
-                phases: batch.phases,
-                knownTasks,
-                nextTaskNumber: knownTasks.length + 1,
-              }),
-              demo: () => ({ tasks: [] }),
-              temperature: 0.4,
+          const results = await Promise.all(stage.map(async (batch, stageIndex) => {
+            let generated: ImplementationTask[] = [];
+            await runBatch(`Task ${batch.label}`, warnings, async () => {
+              const result = await generate({
+                step,
+                config,
+                schema: taskSchemaShape,
+                prompt: promptTasks(definition, batch.features.length > 0 ? batch.features : features, architecture, {
+                  index: completedBatches + stageIndex + 1,
+                  total,
+                  label: batch.label,
+                  phases: batch.phases,
+                  knownTasks,
+                  nextTaskNumber: knownTasks.length + 1,
+                }),
+                demo: () => ({ tasks: [] }),
+                temperature: 0.4,
+              });
+              generated = result.tasks;
+              if (result.tasks.length === 0) {
+                warnings.push(`Batch task "${batch.label}" tidak menghasilkan task apa pun.`);
+              }
             });
-            collected.push(...result.tasks);
-            if (result.tasks.length === 0) {
-              warnings.push(`Batch task "${batch.label}" tidak menghasilkan task apa pun.`);
-            }
-          });
+            return generated;
+          }));
+
+          for (const tasks of results) {
+            const rebased = rebaseTaskIds(tasks, collected.length + 1);
+            collected.push(...rebased);
+          }
+          completedBatches += stage.length;
         }
       }
 
