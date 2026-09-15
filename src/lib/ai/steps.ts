@@ -3,6 +3,7 @@ import {
   apiSpecSchema,
   architectureSpecSchema,
   ARTIFACT_KEYS,
+  assetPlanSpecSchema,
   clarificationAnswerSchema,
   clarificationQuestionSchema,
   consistencyIssueSchema,
@@ -13,6 +14,7 @@ import {
   ideaAnalysisSchema,
   projectDefinitionSchema,
   taskSchema,
+  uiDesignSpecSchema,
   userFlowSchema,
   type ArtifactKey,
   type DocSection,
@@ -30,16 +32,20 @@ import {
   demoDefinition,
   demoFeatures,
   demoFlows,
+  demoAssetPlan,
   demoPrd,
   demoTasks,
+  demoUiDesign,
 } from "./demo";
 import {
   normalizeApi,
   normalizeArchitecture,
+  normalizeAssetPlan,
   normalizeDataModel,
   normalizeDocument,
   normalizeFeatures,
   normalizeTasks,
+  normalizeUiDesign,
 } from "./normalize";
 import { parseWithSchema } from "./parse";
 import {
@@ -49,6 +55,7 @@ import {
   promptAnalyze,
   promptApi,
   promptArchitecture,
+  promptAssetPlan,
   promptClarify,
   promptDataModel,
   promptDefinition,
@@ -57,6 +64,7 @@ import {
   promptFlows,
   promptPrd,
   promptTasks,
+  promptUiDesign,
   promptValidate,
   buildSpecDigest,
   type EditTarget,
@@ -70,6 +78,8 @@ export const STEP_KEYS = [
   "prd",
   "features",
   "flows",
+  "uiDesign",
+  "assetPlan",
   "architecture",
   "dataModel",
   "api",
@@ -89,6 +99,8 @@ export const stepRequestSchema = z.object({
   definition: projectDefinitionSchema.nullable().optional(),
   features: z.array(featureSpecSchema).optional(),
   flows: z.array(userFlowSchema).optional(),
+  uiDesign: uiDesignSpecSchema.nullable().optional(),
+  assetPlan: assetPlanSpecSchema.nullable().optional(),
   architecture: architectureSpecSchema.nullable().optional(),
   dataModel: dataModelSpecSchema.nullable().optional(),
   api: apiSpecSchema.nullable().optional(),
@@ -113,6 +125,8 @@ const editResponseSchema = z.object({
   document: documentSchema.optional(),
   features: z.array(featureSpecSchema).optional(),
   flows: z.array(userFlowSchema).optional(),
+  uiDesign: uiDesignSpecSchema.optional(),
+  assetPlan: assetPlanSpecSchema.optional(),
   architecture: architectureSpecSchema.optional(),
   dataModel: dataModelSpecSchema.optional(),
   api: apiSpecSchema.optional(),
@@ -132,6 +146,7 @@ const FIELD_TO_ARTIFACTS: Record<string, ArtifactKey[]> = {
   nonGoals: ["prd", "features", "tasks", "agentInstructions"],
   integrations: ["architecture", "api", "tasks"],
   technicalPreferences: ["architecture", "api", "tasks", "agentInstructions"],
+  visualDirection: ["uiDesign", "assetPlan", "tasks", "agentInstructions"],
   implementation: ["tasks", "agentInstructions"],
 };
 
@@ -217,6 +232,8 @@ function providerFromRequest(request: StepRequest, config: ProviderConfig): Prov
 const STEP_MAX_TOKENS: Partial<Record<StepKey, number>> = {
   features: 24_000,
   tasks: 24_000,
+  uiDesign: 24_000,
+  assetPlan: 24_000,
   prd: 20_000,
   api: 18_000,
   dataModel: 16_000,
@@ -565,6 +582,65 @@ export async function runStep(
       return { step, payload: { flows: result.flows }, warnings };
     }
 
+    case "uiDesign": {
+      const definition = requireDefinition(request);
+      const features = request.features ?? [];
+      const architecture = request.architecture ?? null;
+      const design = await generate({
+        step,
+        config,
+        schema: uiDesignSpecSchema,
+        prompt: promptUiDesign(definition, features, architecture),
+        demo: () => demoUiDesign(definition, features),
+        temperature: 0.45,
+      });
+      const normalized = normalizeUiDesign(design, features);
+      requireNonEmpty(normalized.screens, "uiDesign");
+      requireNonEmpty(normalized.components, "uiDesign");
+      if (normalized.colorTokens.length === 0) {
+        warnings.push("UI design belum memuat color token, jadi coding agent akan memilih warnanya sendiri.");
+      }
+      const coveredFeatures = new Set(normalized.screens.map((screen) => screen.featureId));
+      const missing = features.filter((feature) => !coveredFeatures.has(feature.id));
+      if (missing.length > 0) {
+        warnings.push(
+          `Belum ada layar untuk fitur: ${missing.map((feature) => feature.name).join(", ")}.`,
+        );
+      }
+      return { step, payload: { uiDesign: normalized }, warnings };
+    }
+
+    case "assetPlan": {
+      const definition = requireDefinition(request);
+      const features = request.features ?? [];
+      const architecture = request.architecture ?? null;
+      const uiDesign = request.uiDesign ?? null;
+      const plan = await generate({
+        step,
+        config,
+        schema: assetPlanSpecSchema,
+        prompt: promptAssetPlan(definition, features, architecture, uiDesign),
+        demo: () => demoAssetPlan(definition, features, uiDesign ?? demoUiDesign(definition, features)),
+        temperature: 0.35,
+      });
+      const normalized = normalizeAssetPlan(plan, uiDesign);
+      requireNonEmpty(normalized.iconSystems, "assetPlan");
+      requireNonEmpty(normalized.sources, "assetPlan");
+      if (normalized.assets.length === 0) {
+        warnings.push("Asset plan belum memuat aset media apa pun.");
+      }
+      if (!normalized.sourcePolicy.freeOnly || !normalized.sourcePolicy.legalOnly) {
+        warnings.push("Kebijakan sumber aset tidak mewajibkan aset gratis dan legal.");
+      }
+      const unknownScreens = normalized.assets.filter((asset) => asset.screenIds.every((id) => typeof id !== "string" || id.length === 0));
+      if (unknownScreens.length > 0) {
+        warnings.push(
+          `Aset tanpa layar yang valid: ${unknownScreens.map((asset) => asset.id).join(", ")}.`,
+        );
+      }
+      return { step, payload: { assetPlan: normalized }, warnings };
+    }
+
     case "architecture": {
       const definition = requireDefinition(request);
       const architecture = await generate({
@@ -660,6 +736,8 @@ export async function runStep(
       const definition = requireDefinition(request);
       const features = request.features ?? [];
       const architecture = request.architecture ?? null;
+      const uiDesign = request.uiDesign ?? null;
+      const assetPlan = request.assetPlan ?? null;
       const taskSchemaShape = z.object({ tasks: z.array(taskSchema).default([]) });
 
       let collected: ImplementationTask[] = [];
@@ -669,8 +747,8 @@ export async function runStep(
           step,
           config,
           schema: taskSchemaShape,
-          prompt: promptTasks(definition, features, architecture),
-          demo: () => ({ tasks: demoTasks(definition, features, architecture) }),
+          prompt: promptTasks(definition, features, architecture, undefined, uiDesign, assetPlan),
+          demo: () => ({ tasks: demoTasks(definition, features, architecture, uiDesign, assetPlan) }),
           temperature: 0.4,
         });
         collected = result.tasks;
@@ -688,14 +766,22 @@ export async function runStep(
                 step,
                 config,
                 schema: taskSchemaShape,
-                prompt: promptTasks(definition, batch.features.length > 0 ? batch.features : features, architecture, {
-                  index: completedBatches + stageIndex + 1,
-                  total,
-                  label: batch.label,
-                  phases: batch.phases,
-                  knownTasks,
-                  nextTaskNumber: knownTasks.length + 1,
-                }),
+                prompt: promptTasks(
+                  definition,
+                  batch.features.length > 0 ? batch.features : features,
+                  architecture,
+                  {
+                    index: completedBatches + stageIndex + 1,
+                    total,
+                    label: batch.label,
+                    phases: batch.phases,
+                    features: batch.features.map((feature) => ({ id: feature.id })),
+                    knownTasks,
+                    nextTaskNumber: knownTasks.length + 1,
+                  },
+                  uiDesign,
+                  assetPlan,
+                ),
                 demo: () => ({ tasks: [] }),
                 temperature: 0.4,
               });
@@ -727,12 +813,15 @@ export async function runStep(
     case "agentInstructions": {
       const definition = requireDefinition(request);
       const tasks = request.tasks ?? [];
+      const architecture = request.architecture ?? null;
+      const uiDesign = request.uiDesign ?? null;
+      const assetPlan = request.assetPlan ?? null;
       const document = await generate({
         step,
         config,
         schema: documentSchema,
-        prompt: promptAgentInstructions(definition, tasks, request.architecture ?? null),
-        demo: () => demoAgentInstructions(definition, tasks, request.architecture ?? null),
+        prompt: promptAgentInstructions(definition, tasks, architecture, uiDesign, assetPlan),
+        demo: () => demoAgentInstructions(definition, tasks, architecture, uiDesign, assetPlan),
         temperature: 0.3,
       });
       return {
@@ -747,6 +836,8 @@ export async function runStep(
         definition: request.definition ?? null,
         features: request.features ?? [],
         flows: request.flows ?? [],
+        uiDesign: request.uiDesign ?? null,
+        assetPlan: request.assetPlan ?? null,
         architecture: request.architecture ?? null,
         dataModel: request.dataModel ?? null,
         api: request.api ?? null,
@@ -817,6 +908,10 @@ function payloadForTarget(target: EditTarget, request: StepRequest) {
       return request.features ?? [];
     case "flows":
       return request.flows ?? [];
+    case "uiDesign":
+      return request.uiDesign ?? null;
+    case "assetPlan":
+      return request.assetPlan ?? null;
     case "architecture":
       return request.architecture ?? null;
     case "dataModel":
@@ -860,6 +955,12 @@ function buildEditPatch(
   }
   if (target === "flows" && result.flows) {
     patch.flows = result.flows;
+  }
+  if (target === "uiDesign" && result.uiDesign) {
+    patch.uiDesign = normalizeUiDesign(result.uiDesign, request.features ?? []);
+  }
+  if (target === "assetPlan" && result.assetPlan) {
+    patch.assetPlan = normalizeAssetPlan(result.assetPlan, request.uiDesign ?? null);
   }
   if (target === "architecture" && result.architecture) {
     patch.architecture = normalizeArchitecture(result.architecture);
@@ -951,6 +1052,32 @@ function buildDemoQuestions(analysis: z.infer<typeof ideaAnalysisSchema>) {
       ],
     },
     {
+      id: "visual-direction",
+      question: "Seperti apa tampilan aplikasi yang kamu inginkan?",
+      description: "Menentukan gaya visual, warna, dan kepadatan antarmuka yang akan diikuti coding agent.",
+      why: "Tanpa arah visual, coding agent memakai tampilan default yang terlihat generik.",
+      type: "radio",
+      category: "visual-design",
+      options: [
+        {
+          label: "Minimalis, bersih, satu warna aksen",
+          description: "Mirip alat bantu developer modern: banyak ruang kosong, hierarki jelas.",
+        },
+        {
+          label: "Padat data, seperti dashboard admin",
+          description: "Tabel dan ringkasan informasi rapat, cocok untuk operator yang bekerja sepanjang hari.",
+        },
+        {
+          label: "Ramah dan berwarna untuk konsumen",
+          description: "Sudut membulat, warna hangat, ilustrasi pada keadaan kosong.",
+        },
+        {
+          label: "Premium dan editorial",
+          description: "Ruang lega, tipografi besar, aksen tunggal yang kuat.",
+        },
+      ],
+    },
+    {
       id: "data-retention",
       question: "Berapa lama data operasional perlu disimpan?",
       description: "Menentukan strategi penyimpanan dan kebijakan arsip.",
@@ -978,6 +1105,8 @@ function demoEdit(target: EditTarget, instruction: string, request: StepRequest)
   }
   if (target === "features") return { summary, affected: [], features: request.features ?? [] };
   if (target === "flows") return { summary, affected: [], flows: request.flows ?? [] };
+  if (target === "uiDesign") return { summary, affected: [], uiDesign: request.uiDesign ?? undefined };
+  if (target === "assetPlan") return { summary, affected: [], assetPlan: request.assetPlan ?? undefined };
   if (target === "architecture") return { summary, affected: [], architecture: request.architecture ?? undefined };
   if (target === "dataModel") return { summary, affected: [], dataModel: request.dataModel ?? undefined };
   if (target === "api") return { summary, affected: [], api: request.api ?? undefined };

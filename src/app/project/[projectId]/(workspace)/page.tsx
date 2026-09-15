@@ -28,6 +28,8 @@ const ARTIFACT_ROUTES: Record<ArtifactKey, string> = {
   prd: "/prd",
   features: "/features",
   flows: "/flows",
+  uiDesign: "/design",
+  assetPlan: "/assets",
   architecture: "/architecture",
   dataModel: "/data-model",
   api: "/api",

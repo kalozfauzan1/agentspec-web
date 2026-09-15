@@ -19,6 +19,8 @@ export const ARTIFACT_ORDER: ArtifactKey[] = [
   "prd",
   "flows",
   "architecture",
+  "uiDesign",
+  "assetPlan",
   "dataModel",
   "api",
   "tasks",
@@ -28,16 +30,22 @@ export const ARTIFACT_ORDER: ArtifactKey[] = [
 /**
  * Features are generated before the PRD so the PRD can reference stable
  * requirement ids and stay traceable to the feature specifications (PRD §28).
+ * Architecture is generated before the UI design so the design can honour the
+ * platform and framework decisions. The UI design and asset plan are generated
+ * before the tasks so the task planner can require documented screens,
+ * components, states, and sourced assets.
  */
 const ARTIFACT_DEPENDENCIES: Record<ArtifactKey, ArtifactKey[]> = {
   features: [],
   prd: ["features"],
   flows: ["features"],
+  uiDesign: ["features", "architecture"],
+  assetPlan: ["uiDesign", "architecture"],
   architecture: [],
   dataModel: ["features"],
   api: ["features", "dataModel"],
-  tasks: ["features"],
-  agentInstructions: ["tasks"],
+  tasks: ["architecture", "uiDesign", "assetPlan"],
+  agentInstructions: ["tasks", "uiDesign", "assetPlan"],
 };
 
 export function expandArtifactSet(keys: ArtifactKey[]): ArtifactKey[] {
@@ -101,7 +109,7 @@ export async function callStep<T>(
 
 function bodyForArtifact(key: ArtifactKey, project: ProjectRecord) {
   const definition = project.definition;
-  const { features, architecture, dataModel, tasks } = project.artifacts;
+  const { features, architecture, dataModel, tasks, uiDesign, assetPlan } = project.artifacts;
 
   switch (key) {
     case "features":
@@ -110,6 +118,10 @@ function bodyForArtifact(key: ArtifactKey, project: ProjectRecord) {
       return { definition, features };
     case "flows":
       return { definition, features };
+    case "uiDesign":
+      return { definition, features, architecture };
+    case "assetPlan":
+      return { definition, features, architecture, uiDesign };
     case "architecture":
       return { definition };
     case "dataModel":
@@ -117,9 +129,9 @@ function bodyForArtifact(key: ArtifactKey, project: ProjectRecord) {
     case "api":
       return { definition, features, dataModel, architecture };
     case "tasks":
-      return { definition, features, architecture };
+      return { definition, features, architecture, uiDesign, assetPlan };
     case "agentInstructions":
-      return { definition, architecture, tasks };
+      return { definition, architecture, tasks, uiDesign, assetPlan };
   }
 }
 
@@ -150,6 +162,10 @@ async function runArtifact(
       return { key, status: "ready", error: null, patch: { features: response.features as ProjectArtifacts["features"] }, warnings };
     case "flows":
       return { key, status: "ready", error: null, patch: { flows: response.flows as ProjectArtifacts["flows"] }, warnings };
+    case "uiDesign":
+      return { key, status: "ready", error: null, patch: { uiDesign: response.uiDesign as ProjectArtifacts["uiDesign"] }, warnings };
+    case "assetPlan":
+      return { key, status: "ready", error: null, patch: { assetPlan: response.assetPlan as ProjectArtifacts["assetPlan"] }, warnings };
     case "architecture":
       return { key, status: "ready", error: null, patch: { architecture: response.architecture as ProjectArtifacts["architecture"] }, warnings };
     case "dataModel":
@@ -166,6 +182,8 @@ async function runArtifact(
         patch: { agentInstructions: response.agentInstructions as ProjectArtifacts["agentInstructions"] },
         warnings,
       };
+    default:
+      throw new Error(`Unhandled artifact step "${String(key)}".`);
   }
 }
 
@@ -253,6 +271,8 @@ export async function runValidationStep(project: ProjectRecord, provider: Provid
       definition: project.definition,
       features: project.artifacts.features,
       flows: project.artifacts.flows,
+      uiDesign: project.artifacts.uiDesign,
+      assetPlan: project.artifacts.assetPlan,
       architecture: project.artifacts.architecture,
       dataModel: project.artifacts.dataModel,
       api: project.artifacts.api,

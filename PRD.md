@@ -313,7 +313,9 @@ Overview
 Product
 ├── PRD
 ├── Features
-└── User Flows
+├── User Flows
+├── UI Design
+└── Asset Plan
 
 Technical
 ├── Architecture
@@ -536,6 +538,48 @@ Example:
 AgentSpec must not silently replace explicit user technology choices.
 
 It also must not present an AI recommendation as though the user had already decided it.
+
+---
+
+## 17.1 Visual Specification Contract
+
+Two generated documents make the visual result implementable instead of interpretable.
+
+### UI Design (`docs/ui-design.md`)
+
+The UI design specification is the only source of visual truth. It contains:
+
+- a product-specific creative concept and its rationale,
+- two or three signature moments tied to concrete screens,
+- font families with a legal source and a system fallback,
+- semantic color, spacing, radius, elevation, and motion tokens,
+- layout, shell, navigation, grid, and breakpoints,
+- one platform profile per target platform covering navigation, units, input modes, safe areas, resizing, and adaptive behavior,
+- approved UI dependencies (icon family, chart library, animation, map, component primitives) with their decision source and valid platforms,
+- a component inventory with anatomy, variants, states, token references, and platform notes,
+- every screen with its layout regions, components, states, realistic sample content, asset references, and acceptance criteria,
+- interaction, accessibility, content, anti-pattern, and visual-QA rules.
+
+The generator must not add authentication, dashboards, tables, or list/detail surfaces the requirements do not need. When the user provides little visual guidance, the system infers one product-specific direction and records the reasoning rather than falling back to a universal dashboard preset.
+
+### Asset Plan (`docs/asset-plan.md`)
+
+The asset plan is the only source of truth for iconography and media. It contains:
+
+- a source policy that requires free, legal, repository-local assets,
+- exactly one icon system per target platform with size, stroke, fill, alignment, color, accessibility, and concrete action-to-icon mappings,
+- a curated source catalog with official URL, asset types, license, attribution requirement, and platform restrictions,
+- one entry per media asset with type, purpose, screen references, placement, source method, query, destination path, format, dimensions, aspect ratio, treatment, alt text, fallback, platform variants, license, and attribution.
+
+The coding agent downloads or creates each asset at its documented local path and implements its fallback. Assets from unverified sources block the visual-readiness check.
+
+### Cross-Document Rules
+
+- Feature specifications declare whether a feature is user-facing, its UI surfaces, and its media requirements.
+- Frontend and integration tasks reference concrete screen ids and asset ids.
+- `AGENTS.md` requires both visual documents to be read before interface code is written, and requires a screenshot-based visual QA pass.
+- Editing visual intent marks UI Design, Asset Plan, Tasks, and Agent Instructions stale.
+- The Markdown ZIP export stays disabled while a visual artifact is missing or a high-severity consistency issue is open; the project JSON export remains available.
 
 ---
 
@@ -953,6 +997,8 @@ project-spec/
 │   ├── product-brief.md
 │   ├── PRD.md
 │   ├── user-flows.md
+│   ├── ui-design.md
+│   ├── asset-plan.md
 │   ├── architecture.md
 │   ├── data-model.md
 │   ├── api.md
@@ -1219,12 +1265,14 @@ The MVP needs the following core UI states:
 3. **Project Review** — confirmation of product definition before generation.
 4. **PRD Workspace** — generated PRD and specification editing.
 5. **Feature Specification** — detailed requirements for each feature.
-6. **Technical Architecture** — architecture, tech decisions, and system context.
-7. **Data Model** — entity and relationship specification.
-8. **API** — endpoint specification where relevant.
-9. **Implementation Tasks** — frontend-first task structure by default.
-10. **Agent Instructions** — generated AGENTS.md.
-11. **Export Specification** — Markdown ZIP, local Project JSON, starter prompt.
+6. **UI Design** — visual direction, design tokens, component inventory, and every screen with its layout and states.
+7. **Asset Plan** — icon systems per platform, media placements, legal sources, licenses, local paths, and fallbacks.
+8. **Technical Architecture** — architecture, tech decisions, and system context.
+9. **Data Model** — entity and relationship specification.
+10. **API** — endpoint specification where relevant.
+11. **Implementation Tasks** — frontend-first task structure by default.
+12. **Agent Instructions** — generated AGENTS.md.
+13. **Export Specification** — Markdown ZIP, local Project JSON, starter prompt.
 
 These surfaces may live inside two primary application contexts:
 

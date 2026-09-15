@@ -100,6 +100,15 @@ Key invariants that keep the package consistent (PRD §10, §27, §28, §34):
    completed work.
 5. A consistency pass (structural checks + AI review) runs after generation and is
    surfaced on the project overview.
+6. Every package carries `docs/ui-design.md` — visual direction, design tokens, a
+   component inventory, and every screen with its layout, states, and sample content.
+   Frontend tasks, `AGENTS.md`, and the starter prompt all point at it, so a coding
+   agent implements a documented interface instead of styling screens ad hoc.
+7. Every package also carries `docs/asset-plan.md` — one icon system per target
+   platform, media placements, approved free and legal sources, licenses, local
+   paths, and per-asset fallbacks. Visual rules are cross-checked between the two
+   documents, and the Markdown ZIP export is blocked while a visual artifact is
+   missing or a high-severity consistency issue is open.
 
 ## Environment variables
 

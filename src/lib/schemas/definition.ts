@@ -32,6 +32,39 @@ export const stringList = z.preprocess((value) => {
   return value;
 }, z.array(z.string().min(1)));
 
+/* ------------------------------------------------------------------ */
+/* Visual direction (PRD §9, §10)                                     */
+/* ------------------------------------------------------------------ */
+
+export const visualDirectionSchema = z.object({
+  style: z.string().default(""),
+  themeMode: z.string().default(""),
+  references: stringList.default([]),
+  notes: z.string().default(""),
+  personality: z.string().default(""),
+  audienceContext: z.string().default(""),
+  desiredEmotion: z.string().default(""),
+  informationDensity: z.string().default(""),
+  mediaPreferences: stringList.default([]),
+  brandConstraints: stringList.default([]),
+  avoidPatterns: stringList.default([]),
+});
+export type VisualDirection = z.infer<typeof visualDirectionSchema>;
+
+export const EMPTY_VISUAL_DIRECTION: VisualDirection = {
+  style: "",
+  themeMode: "",
+  references: [],
+  notes: "",
+  personality: "",
+  audienceContext: "",
+  desiredEmotion: "",
+  informationDensity: "",
+  mediaPreferences: [],
+  brandConstraints: [],
+  avoidPatterns: [],
+};
+
 export const roleSchema = z.preprocess(
   (value) => (typeof value === "string" ? { name: value } : value),
   z.object({
@@ -73,6 +106,7 @@ export const ideaAnalysisSchema = z.object({
   businessRules: stringList.default([]),
   integrations: stringList.default([]),
   technicalPreferences: z.array(techDecisionSchema).default([]),
+  visualPreferences: stringList.default([]),
   constraints: stringList.default([]),
   nonGoals: stringList.default([]),
   ambiguities: stringList.default([]),
@@ -100,6 +134,7 @@ export const clarificationQuestionSchema = z.object({
       "payment",
       "data",
       "technical",
+      "visual-design",
     ])
     .default("feature-behavior"),
   options: z
@@ -137,6 +172,7 @@ export const projectDefinitionSchema = z.object({
   nonGoals: stringList.default([]),
   integrations: stringList.default([]),
   technicalPreferences: z.array(techDecisionSchema).default([]),
+  visualDirection: visualDirectionSchema.default(EMPTY_VISUAL_DIRECTION),
   implementation: z
     .object({ strategy: implementationStrategySchema.default("frontend-first") })
     .default({ strategy: "frontend-first" }),

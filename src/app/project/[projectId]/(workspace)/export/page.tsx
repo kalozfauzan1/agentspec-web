@@ -102,6 +102,24 @@ export default function ExportPage() {
   const missing = ARTIFACT_KEYS.filter((key) => active.artifactStatus[key]?.status !== "ready");
   const totalKb = Math.round(files.reduce((sum, file) => sum + file.content.length, 0) / 1024);
 
+  const visualBlockers = [
+    { key: "uiDesign" as const, label: "UI Design" },
+    { key: "assetPlan" as const, label: "Asset Plan" },
+  ].filter((entry) => active.artifactStatus[entry.key]?.status !== "ready");
+
+  const highSeverityIssues = (active.validation?.issues ?? []).filter(
+    (issue) => issue.severity === "high",
+  );
+
+  const blockedReason =
+    visualBlockers.length > 0
+      ? `Package belum bisa di-download sebagai Markdown ZIP karena ${visualBlockers
+          .map((entry) => entry.label)
+          .join(" dan ")} belum siap.`
+      : highSeverityIssues.length > 0
+        ? `Package diblokir karena ada ${highSeverityIssues.length} temuan konsistensi berlevel tinggi. Perbaiki dulu di Overview.`
+        : null;
+
   const copy = async (value: string, label: string) => {
     await navigator.clipboard.writeText(value);
     setCopied(label);
@@ -155,6 +173,12 @@ export default function ExportPage() {
 
       {error && <Alert tone="danger">{error}</Alert>}
 
+      {blockedReason && (
+        <Alert tone="warning" title="Markdown package belum siap">
+          {blockedReason} Kamu tetap bisa mengunduh project JSON untuk backup.
+        </Alert>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="space-y-6">
           <Card>
@@ -168,7 +192,7 @@ export default function ExportPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <Button size="lg" onClick={exportZip} disabled={exporting}>
+              <Button size="lg" onClick={exportZip} disabled={exporting || blockedReason !== null}>
                 {exporting ? <Spinner /> : <Download />}
                 {exporting ? "Menyiapkan ZIP…" : "Download specification package"}
               </Button>

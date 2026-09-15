@@ -2,11 +2,13 @@ import { z } from "zod";
 import {
   apiSpecSchema,
   architectureSpecSchema,
+  assetPlanSpecSchema,
   consistencyReportSchema,
   dataModelSpecSchema,
   documentSchema,
   featureSpecSchema,
   taskSchema,
+  uiDesignSpecSchema,
   userFlowSchema,
 } from "./artifacts";
 import {
@@ -20,6 +22,8 @@ export const ARTIFACT_KEYS = [
   "prd",
   "features",
   "flows",
+  "uiDesign",
+  "assetPlan",
   "architecture",
   "dataModel",
   "api",
@@ -47,6 +51,18 @@ export const ARTIFACT_META: Record<
     label: "User Flows",
     description: "Step-by-step flows for the most important user interactions.",
     fileName: "docs/user-flows.md",
+  },
+  uiDesign: {
+    label: "UI Design",
+    description:
+      "Visual direction, design tokens, component inventory, and every screen with its layout and states.",
+    fileName: "docs/ui-design.md",
+  },
+  assetPlan: {
+    label: "Asset Plan",
+    description:
+      "Icon systems, media placements, legal sources, licenses, local paths, and fallbacks.",
+    fileName: "docs/asset-plan.md",
   },
   architecture: {
     label: "Architecture",
@@ -111,6 +127,8 @@ export const projectArtifactsSchema = z.object({
   prd: documentSchema.nullable().default(null),
   features: z.array(featureSpecSchema).default([]),
   flows: z.array(userFlowSchema).default([]),
+  uiDesign: uiDesignSpecSchema.nullable().default(null),
+  assetPlan: assetPlanSpecSchema.nullable().default(null),
   architecture: architectureSpecSchema.nullable().default(null),
   dataModel: dataModelSpecSchema.nullable().default(null),
   api: apiSpecSchema.nullable().default(null),

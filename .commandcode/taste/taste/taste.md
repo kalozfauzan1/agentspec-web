@@ -5,4 +5,8 @@
 - Expects a rebuild to still conform to the existing PRD and UI reference docs rather than re-deciding the product. Confidence: 0.6
 - Wants agents to actually run the app and walk through the full flow like a real user (not just typecheck/build) before declaring work done. Confidence: 0.7
 - Wants the real end-to-end path exercised with live configured credentials, then a critical review of the produced output rather than only a pass/fail smoke test. Confidence: 0.6
+- Holds a high bar for UI polish: judges an app by its visual quality and treats a "basic"-looking UI as a failure even when the functionality works. Confidence: 0.6
 - Delegates git version control to the agent: a short "commit dan push" is enough — commit directly to main and push, without asking for confirmation steps or a PR. Confidence: 0.45
+- Prefers specifications to be exhaustive enough that the agent implementing from them has nothing left to interpret — exact design tokens, component inventory, per-screen layout and states, realistic sample data — and diagnoses generic output as an under-specified document rather than a tooling problem. Confidence: 0.6
+- Works in a hand-off loop: generates a spec/export package with one tool, gives it to a separate coding agent to build the app, then evaluates the resulting application rather than the spec tool itself. Confidence: 0.55
+- After a substantial piece of work, expects the key decisions and findings to be persisted to long-term memory; when asking to save, intends broad session knowledge (architecture, conventions/checklists, gotchas, workflow) to be captured too, not only the immediate fix. Confidence: 0.55

@@ -2,12 +2,17 @@ import {
   FRONTEND_FIRST_PHASES,
   type ApiSpec,
   type ArchitectureSpec,
+  type AssetPlanSpec,
   type DataModelSpec,
+  type DesignComponent,
+  type DesignScreen,
+  type DesignToken,
   type FeatureSpec,
   type ImplementationTask,
   type ProjectDefinition,
   type Requirement,
   type SpecDocument,
+  type UiDesignSpec,
 } from "@/lib/schemas";
 
 const REQUIREMENT_ID = /^[A-Z][A-Z0-9]{1,9}-\d{2,4}$/;
@@ -164,7 +169,9 @@ export function normalizeTasks(
       requirements: unique(task.requirements),
       acceptanceCriteria: unique(task.acceptanceCriteria),
       uiStates: isFrontendFacing ? unique(task.uiStates) : [],
-      contextDocs: normalizeContextDocs(task.contextDocs, featureId, features),
+      screenIds: unique(task.screenIds),
+      assetIds: unique(task.assetIds),
+      contextDocs: normalizeContextDocs(task.contextDocs, featureId, features, isFrontendFacing),
     };
   });
 
@@ -225,10 +232,17 @@ function resolvePhase(
   return phaseRank.has(mapped) ? mapped : phases[0];
 }
 
-function normalizeContextDocs(docs: string[], featureId: string, features: FeatureSpec[]) {
+function normalizeContextDocs(
+  docs: string[],
+  featureId: string,
+  features: FeatureSpec[],
+  includeDesignDoc = false,
+) {
   const known = new Set([
     "docs/PRD.md",
     "docs/user-flows.md",
+    "docs/ui-design.md",
+    "docs/asset-plan.md",
     "docs/architecture.md",
     "docs/data-model.md",
     "docs/api.md",
@@ -241,6 +255,12 @@ function normalizeContextDocs(docs: string[], featureId: string, features: Featu
     const cleaned = doc.trim().replace(/^\.?\//, "");
     if (!cleaned) continue;
     if (known.has(cleaned) || cleaned.startsWith("docs/")) result.add(cleaned);
+  }
+  // Any task that renders UI must be implemented against the design specification
+  // and the asset plan that documents its icons, media, and fallbacks.
+  if (includeDesignDoc) {
+    result.add("docs/ui-design.md");
+    result.add("docs/asset-plan.md");
   }
   if (feature) result.add(`docs/features/${feature.id}.md`);
   if (result.size === 0) result.add("docs/PRD.md");
@@ -344,6 +364,268 @@ export function normalizeDataModel(input: DataModelSpec): DataModelSpec {
         names.has(relationship.from.toLowerCase()) && names.has(relationship.to.toLowerCase()),
     ),
   };
+}
+
+function normalizeTokens(list: DesignToken[]): DesignToken[] {
+  const seen = new Set<string>();
+  return list
+    .map((token) => ({
+      ...token,
+      name: token.name.trim(),
+      value: token.value.trim(),
+      usage: token.usage.trim(),
+    }))
+    .filter((token) => token.name.length > 0 && token.value.length > 0)
+    .filter((token) => {
+      const key = token.name.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function normalizeComponents(list: DesignComponent[]): DesignComponent[] {
+  const seen = new Set<string>();
+  return list
+    .filter((component) => component.name.trim().length > 0)
+    .map((component) => ({
+      ...component,
+      name: component.name.trim(),
+      purpose: component.purpose.trim(),
+      variants: unique(component.variants),
+      states: unique(component.states),
+      rules: unique(component.rules),
+    }))
+    .filter((component) => {
+      const key = component.name.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+export function normalizeUiDesign(input: UiDesignSpec, features: FeatureSpec[]): UiDesignSpec {
+  const featureIds = new Set(features.map((feature) => feature.id));
+  const usedScreenIds = new Set<string>();
+
+  const components = normalizeComponents(input.components);
+
+  const screens: DesignScreen[] = input.screens
+    .filter((screen) => screen.name.trim().length > 0)
+    .map((screen, index) => ({
+      ...screen,
+      id: uniqueId(
+        slugId(screen.id || screen.name, `screen-${index + 1}`),
+        usedScreenIds,
+        `screen-${index + 1}`,
+      ),
+      name: screen.name.trim(),
+      featureId: featureIds.has(screen.featureId) ? screen.featureId : "",
+      purpose: screen.purpose.trim(),
+      layout: unique(screen.layout),
+      components: unique(screen.components),
+      states: unique(screen.states),
+      responsive: unique(screen.responsive),
+      sampleContent: unique(screen.sampleContent),
+      assetIds: unique(screen.assetIds),
+    }));
+
+  // A screen may only reference components that exist in the inventory, so every
+  // referenced component that the model forgot is added instead of dropped.
+  const known = new Set(components.map((component) => component.name.toLowerCase()));
+  for (const screen of screens) {
+    for (const name of screen.components) {
+      const key = name.toLowerCase();
+      if (known.has(key)) continue;
+      known.add(key);
+      components.push({ name, purpose: "", variants: [], states: [], rules: [] });
+    }
+  }
+
+  const knownScreenIds = new Set(screens.map((screen) => screen.id));
+
+  return {
+    overview: input.overview.trim(),
+    styleDirection: input.styleDirection.trim(),
+    creativeConcept: input.creativeConcept.trim(),
+    creativeRationale: input.creativeRationale.trim(),
+    themeMode: input.themeMode.trim(),
+    principles: unique(input.principles),
+    signatureMoments: input.signatureMoments
+      .filter((moment) => moment.name.trim().length > 0)
+      .map((moment) => ({
+        ...moment,
+        name: moment.name.trim(),
+        description: moment.description.trim(),
+        screenIds: unique(moment.screenIds).filter((id) => knownScreenIds.has(id)),
+      })),
+    fontFamilies: input.fontFamilies
+      .filter((font) => font.family.trim().length > 0)
+      .map((font) => ({
+        ...font,
+        family: font.family.trim(),
+        source: font.source.trim(),
+        fallback: font.fallback.trim(),
+        weights: unique(font.weights),
+      })),
+    platformProfiles: dedupeBy(
+      input.platformProfiles
+        .filter((profile) => profile.platform.trim().length > 0)
+        .map((profile) => ({
+          ...profile,
+          platform: profile.platform.trim(),
+          navigation: profile.navigation.trim(),
+          units: profile.units.trim(),
+          inputModes: unique(profile.inputModes),
+          safeAreas: profile.safeAreas.trim(),
+          resizing: profile.resizing.trim(),
+          adaptiveBehavior: profile.adaptiveBehavior.trim(),
+        })),
+      (profile) => profile.platform.toLowerCase(),
+    ),
+    approvedDependencies: dedupeBy(
+      input.approvedDependencies
+        .filter((dependency) => dependency.name.trim().length > 0)
+        .map((dependency) => ({
+          ...dependency,
+          name: dependency.name.trim(),
+          purpose: dependency.purpose.trim(),
+          platforms: unique(dependency.platforms.map((platform) => platform.trim())).filter(Boolean),
+        })),
+      (dependency) => dependency.name.toLowerCase(),
+    ),
+    colorTokens: normalizeTokens(input.colorTokens),
+    typographyScale: input.typographyScale
+      .filter((token) => token.role.trim().length > 0 && token.size.trim().length > 0)
+      .map((token) => ({
+        ...token,
+        role: token.role.trim(),
+        size: token.size.trim(),
+        weight: token.weight.trim() || "400",
+        lineHeight: token.lineHeight.trim() || "1.5",
+        usage: token.usage.trim(),
+      })),
+    spacingScale: normalizeTokens(input.spacingScale),
+    radiusTokens: normalizeTokens(input.radiusTokens),
+    shadowTokens: normalizeTokens(input.shadowTokens),
+    layout: {
+      shell: input.layout.shell.trim(),
+      navigation: input.layout.navigation.trim(),
+      grid: input.layout.grid.trim(),
+      breakpoints: input.layout.breakpoints
+        .filter((breakpoint) => breakpoint.name.trim().length > 0)
+        .map((breakpoint) => ({
+          name: breakpoint.name.trim(),
+          width: breakpoint.width.trim() || "—",
+          behavior: breakpoint.behavior.trim(),
+        })),
+    },
+    components,
+    screens,
+    interactionRules: unique(input.interactionRules),
+    accessibilityRules: unique(input.accessibilityRules),
+    contentRules: unique(input.contentRules),
+    antiPatterns: unique(input.antiPatterns),
+    visualQaRules: unique(input.visualQaRules),
+  };
+}
+
+export function normalizeAssetPlan(input: AssetPlanSpec, uiDesign: UiDesignSpec | null): AssetPlanSpec {
+  const knownScreenIds = new Set((uiDesign?.screens ?? []).map((screen) => screen.id));
+  const sources = dedupeBy(
+    input.sources
+      .filter((source) => source.id.trim().length > 0)
+      .map((source) => ({
+        ...source,
+        id: source.id.trim(),
+        name: source.name.trim(),
+        officialUrl: source.officialUrl.trim(),
+        assetTypes: unique(source.assetTypes.map((type) => type.trim())).filter(Boolean),
+        license: source.license.trim(),
+        platformRestrictions: unique(
+          source.platformRestrictions.map((restriction) => restriction.trim()),
+        ).filter(Boolean),
+      })),
+    (source) => source.id.toLowerCase(),
+  );
+  const knownSourceIds = new Set(sources.map((source) => source.id));
+  const usedAssetIds = new Set<string>();
+
+  const assets = dedupeBy(
+    input.assets
+      .filter((asset) => asset.id.trim().length > 0)
+      .map((asset, index) => ({
+        ...asset,
+        id: uniqueId(slugId(asset.id, `asset-${index + 1}`), usedAssetIds, `asset-${index + 1}`),
+        type: asset.type.trim(),
+        purpose: asset.purpose.trim(),
+        screenIds: unique(asset.screenIds).filter((id) => knownScreenIds.has(id)),
+        placement: asset.placement.trim(),
+        sourceMethod: asset.sourceMethod.trim(),
+        sourceId: asset.sourceId.trim(),
+        query: asset.query.trim(),
+        destinationPath: asset.destinationPath.trim(),
+        format: asset.format.trim(),
+        dimensions: asset.dimensions.trim(),
+        aspectRatio: asset.aspectRatio.trim(),
+        treatment: asset.treatment.trim(),
+        altText: asset.altText.trim(),
+        fallback: asset.fallback.trim(),
+        platformVariants: unique(asset.platformVariants),
+        license: asset.license.trim(),
+        attribution: asset.attribution.trim(),
+      }))
+      .filter((asset) => asset.screenIds.length > 0)
+      .map((asset) => ({
+        ...asset,
+        sourceId: knownSourceIds.has(asset.sourceId) ? asset.sourceId : sources[0]?.id ?? asset.sourceId,
+      })),
+    (asset) => asset.id.toLowerCase(),
+  );
+
+  return {
+    strategy: input.strategy.trim(),
+    sourcePolicy: {
+      rationale: input.sourcePolicy.rationale.trim(),
+      freeOnly: input.sourcePolicy.freeOnly,
+      legalOnly: input.sourcePolicy.legalOnly,
+      localOnly: input.sourcePolicy.localOnly,
+    },
+    iconSystems: dedupeBy(
+      input.iconSystems
+        .filter((system) => system.platform.trim().length > 0 && system.family.trim().length > 0)
+        .map((system) => ({
+          ...system,
+          platform: system.platform.trim(),
+          family: system.family.trim(),
+          size: system.size.trim(),
+          stroke: system.stroke.trim(),
+          fill: system.fill.trim(),
+          opticalAlignment: system.opticalAlignment.trim(),
+          color: system.color.trim(),
+          accessibility: system.accessibility.trim(),
+          mappings: dedupeBy(
+            system.mappings
+              .filter((mapping) => mapping.action.trim().length > 0 && mapping.icon.trim().length > 0)
+              .map((mapping) => ({ action: mapping.action.trim(), icon: mapping.icon.trim() })),
+            (mapping) => mapping.action.toLowerCase(),
+          ),
+        })),
+      (system) => system.platform.toLowerCase(),
+    ),
+    sources,
+    assets,
+  };
+}
+
+function dedupeBy<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const value = key(item);
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
 }
 
 export function normalizeArchitecture(input: ArchitectureSpec): ArchitectureSpec {

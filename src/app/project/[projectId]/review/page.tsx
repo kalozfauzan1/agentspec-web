@@ -31,6 +31,14 @@ const STRATEGY_COPY: Record<ImplementationStrategy, string> = {
     "Dipakai hanya kalau kamu memang minta dikerjakan per module / vertical slice sampai selesai end-to-end.",
 };
 
+const THEME_MODES = ["light", "dark", "both"] as const;
+
+const THEME_MODE_LABEL: Record<(typeof THEME_MODES)[number], string> = {
+  light: "Light",
+  dark: "Dark",
+  both: "Light & Dark",
+};
+
 export default function ProjectReviewPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
@@ -243,6 +251,180 @@ export default function ProjectReviewPage() {
                   onChange={(technicalPreferences) => update({ technicalPreferences })}
                 />
               )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Arah Visual</CardTitle>
+              <CardDescription>
+                Menentukan tampilan yang akan diikuti UI design specification. Coding agent memakai
+                bagian ini, jadi perbaiki kalau belum sesuai keinginanmu.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-2">
+                <Label htmlFor="visual-style">Gaya visual</Label>
+                <Textarea
+                  id="visual-style"
+                  rows={3}
+                  value={definition.visualDirection.style}
+                  onChange={(event) =>
+                    update({
+                      visualDirection: {
+                        ...definition.visualDirection,
+                        style: event.target.value,
+                      },
+                    })
+                  }
+                  placeholder="Minimalis, satu warna aksen, hierarki tipografi kuat…"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Theme</Label>
+                <div className="flex gap-2">
+                  {THEME_MODES.map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() =>
+                        update({
+                          visualDirection: { ...definition.visualDirection, themeMode: mode },
+                        })
+                      }
+                      className={`flex-1 rounded-control border px-3 py-2 text-[13px] transition-colors ${
+                        definition.visualDirection.themeMode === mode
+                          ? "border-primary-border bg-primary-soft font-medium text-primary"
+                          : "border-border bg-surface text-foreground-soft hover:bg-surface-muted"
+                      }`}
+                    >
+                      {THEME_MODE_LABEL[mode]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <ChipListEditor
+                label="Referensi tampilan"
+                items={definition.visualDirection.references}
+                onChange={(references) =>
+                  update({ visualDirection: { ...definition.visualDirection, references } })
+                }
+                placeholder="Linear, Notion, Stripe Dashboard…"
+              />
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="visual-personality">Karakter</Label>
+                  <Input
+                    id="visual-personality"
+                    value={definition.visualDirection.personality}
+                    onChange={(event) =>
+                      update({
+                        visualDirection: {
+                          ...definition.visualDirection,
+                          personality: event.target.value,
+                        },
+                      })
+                    }
+                    placeholder="Tenang, presisi, dan tegas…"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="visual-emotion">Emosi yang diinginkan</Label>
+                  <Input
+                    id="visual-emotion"
+                    value={definition.visualDirection.desiredEmotion}
+                    onChange={(event) =>
+                      update({
+                        visualDirection: {
+                          ...definition.visualDirection,
+                          desiredEmotion: event.target.value,
+                        },
+                      })
+                    }
+                    placeholder="Tenang dan terkendali saat situasi genting…"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="visual-audience">Konteks audiens</Label>
+                  <Input
+                    id="visual-audience"
+                    value={definition.visualDirection.audienceContext}
+                    onChange={(event) =>
+                      update({
+                        visualDirection: {
+                          ...definition.visualDirection,
+                          audienceContext: event.target.value,
+                        },
+                      })
+                    }
+                    placeholder="Dipakai operator sepanjang hari…"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="visual-density">Kepadatan informasi</Label>
+                  <Input
+                    id="visual-density"
+                    value={definition.visualDirection.informationDensity}
+                    onChange={(event) =>
+                      update({
+                        visualDirection: {
+                          ...definition.visualDirection,
+                          informationDensity: event.target.value,
+                        },
+                      })
+                    }
+                    placeholder="Nyaman dibaca, satu fokus per layar…"
+                  />
+                </div>
+              </div>
+
+              <ChipListEditor
+                label="Preferensi media"
+                items={definition.visualDirection.mediaPreferences}
+                onChange={(mediaPreferences) =>
+                  update({ visualDirection: { ...definition.visualDirection, mediaPreferences } })
+                }
+                placeholder="Fotografi asli, ilustrasi garis untuk empty state…"
+              />
+
+              <ChipListEditor
+                label="Batasan brand"
+                items={definition.visualDirection.brandConstraints}
+                onChange={(brandConstraints) =>
+                  update({ visualDirection: { ...definition.visualDirection, brandConstraints } })
+                }
+                placeholder="Warna brand, logo, tipografi wajib…"
+              />
+
+              <ChipListEditor
+                label="Pola yang harus dihindari"
+                items={definition.visualDirection.avoidPatterns}
+                onChange={(avoidPatterns) =>
+                  update({ visualDirection: { ...definition.visualDirection, avoidPatterns } })
+                }
+                placeholder="Dashboard KPI, glassmorphism, emoji sebagai ikon…"
+              />
+
+              <div className="space-y-2">
+                <Label htmlFor="visual-notes">Catatan tambahan</Label>
+                <Textarea
+                  id="visual-notes"
+                  rows={2}
+                  value={definition.visualDirection.notes}
+                  onChange={(event) =>
+                    update({
+                      visualDirection: {
+                        ...definition.visualDirection,
+                        notes: event.target.value,
+                      },
+                    })
+                  }
+                  placeholder="Warna brand, ikon, atau hal lain yang harus diikuti…"
+                />
+              </div>
             </CardContent>
           </Card>
 

@@ -1,12 +1,14 @@
 import type {
   ApiSpec,
   ArchitectureSpec,
+  AssetPlanSpec,
   ConsistencyIssue,
   DataModelSpec,
   FeatureSpec,
   ImplementationTask,
   ProjectDefinition,
   SpecDocument,
+  UiDesignSpec,
   UserFlow,
 } from "@/lib/schemas";
 import { allowedPhases } from "@/lib/ai/normalize";
@@ -15,6 +17,8 @@ export interface ValidationInput {
   definition: ProjectDefinition | null;
   features: FeatureSpec[];
   flows: UserFlow[];
+  uiDesign: UiDesignSpec | null;
+  assetPlan: AssetPlanSpec | null;
   architecture: ArchitectureSpec | null;
   dataModel: DataModelSpec | null;
   api: ApiSpec | null;
@@ -54,7 +58,7 @@ export function runDeterministicChecks(input: ValidationInput): ConsistencyIssue
     issues.push({ id: `check-${issues.length + 1}`, ...issue });
   };
 
-  const { definition, features, flows, architecture, dataModel, api, tasks } = input;
+  const { definition, features, flows, uiDesign, assetPlan, architecture, dataModel, api, tasks } = input;
 
   if (!definition) {
     push({
@@ -137,8 +141,250 @@ export function runDeterministicChecks(input: ValidationInput): ConsistencyIssue
     }
   }
 
+  if (features.length > 0 && !uiDesign) {
+    push({
+      severity: "medium",
+      area: "design",
+      summary: "UI design specification belum dibuat.",
+      detail:
+        "Tanpa dokumen ini coding agent memilih warna, tipografi, jarak, dan komponennya sendiri, sehingga tampilan aplikasi hasil generate terlihat generik.",
+      artifacts: ["uiDesign"],
+      suggestion: "Generate UI design specification supaya setiap layar punya layout, komponen, dan state yang jelas.",
+    });
+  }
+
+  if (uiDesign) {
+    if (uiDesign.colorTokens.length === 0 || uiDesign.components.length === 0) {
+      push({
+        severity: "medium",
+        area: "design",
+        summary: "UI design belum memuat design token atau component inventory.",
+        detail:
+          "Tanpa token dan komponen bersama, setiap layar ditata sendiri-sendiri dan hasilnya tidak konsisten.",
+        artifacts: ["uiDesign"],
+        suggestion: "Lengkapi color token, typography, spacing, radius, shadow, dan daftar komponen.",
+      });
+    }
+
+    const designedFeatureIds = new Set(
+      uiDesign.screens.map((screen) => screen.featureId).filter(Boolean),
+    );
+
+    for (const screen of uiDesign.screens) {
+      if (screen.featureId && !featureIds.has(screen.featureId)) {
+        push({
+          severity: "medium",
+          area: "design",
+          summary: `Layar "${screen.name}" merujuk feature yang tidak ada.`,
+          detail: `featureId "${screen.featureId}" tidak ditemukan pada feature specifications.`,
+          artifacts: ["uiDesign", "features"],
+          suggestion: "Perbaiki rujukan feature layar tersebut, atau jadikan layar bersama tanpa featureId.",
+        });
+      }
+      if (screen.states.length === 0) {
+        push({
+          severity: "low",
+          area: "design",
+          summary: `Layar "${screen.name}" tidak mendefinisikan state.`,
+          detail: "Coding agent butuh daftar state (loading, empty, error) supaya tidak hanya membuat happy path.",
+          artifacts: ["uiDesign"],
+          suggestion: "Tambahkan state yang harus diimplementasikan pada layar tersebut.",
+        });
+      }
+    }
+
+    for (const feature of features) {
+      if (!designedFeatureIds.has(feature.id)) {
+        push({
+          severity: "medium",
+          area: "design",
+          summary: `Feature "${feature.name}" belum punya layar pada UI design.`,
+          detail: "Setiap fitur yang punya antarmuka harus dijelaskan layarnya, termasuk layout dan state-nya.",
+          artifacts: ["uiDesign", "features"],
+          suggestion: "Tambahkan layar untuk fitur ini pada UI design specification.",
+        });
+      }
+    }
+
+    if (uiDesign.platformProfiles.length < definition.platform.length) {
+      const covered = new Set(uiDesign.platformProfiles.map((profile) => profile.platform.toLowerCase()));
+      const missing = definition.platform.filter((platform) => !covered.has(platform.toLowerCase()));
+      if (missing.length > 0) {
+        push({
+          severity: "medium",
+          area: "design",
+          summary: `Platform ${missing.join(", ")} belum punya platform profile.`,
+          detail: "Coding agent butuh perilaku per platform: navigasi, unit, safe area, dan adaptive behavior.",
+          artifacts: ["uiDesign"],
+          suggestion: "Tambahkan platform profile untuk setiap platform di project definition.",
+        });
+      }
+    }
+
+    if (uiDesign.signatureMoments.length < 2) {
+      push({
+        severity: "low",
+        area: "design",
+        summary: "UI design belum menetapkan signature moment yang cukup.",
+        detail: "Tanpa minimal dua momen khas, tampilan mudah jatuh ke pola dashboard generik.",
+        artifacts: ["uiDesign"],
+        suggestion: "Tambahkan dua atau tiga signature moment yang merujuk layar konkret.",
+      });
+    }
+  }
+
+  if (features.length > 0 && !assetPlan) {
+    push({
+      severity: "medium",
+      area: "assets",
+      summary: "Asset plan belum dibuat.",
+      detail:
+        "Tanpa rencana aset, coding agent memilih ikon, gambar, dan ilustrasinya sendiri sehingga hasilnya tidak konsisten dan berisiko melanggar lisensi.",
+      artifacts: ["assetPlan"],
+      suggestion: "Generate asset plan agar setiap ikon dan media punya sumber, lisensi, path lokal, dan fallback.",
+    });
+  }
+
+  if (assetPlan) {
+    const screenIdSet = new Set((uiDesign?.screens ?? []).map((screen) => screen.id));
+    const sourceIds = new Set(assetPlan.sources.map((source) => source.id));
+    const assetIds = new Set(assetPlan.assets.map((asset) => asset.id));
+
+    if (!assetPlan.sourcePolicy.freeOnly || !assetPlan.sourcePolicy.legalOnly || !assetPlan.sourcePolicy.localOnly) {
+      push({
+        severity: "high",
+        area: "assets",
+        summary: "Kebijakan sumber aset tidak mewajibkan aset gratis, legal, dan lokal.",
+        detail: "Aset harus gratis, legal, dan disimpan di repository supaya aman dipakai.",
+        artifacts: ["assetPlan"],
+        suggestion: "Aktifkan freeOnly, legalOnly, dan localOnly pada sourcePolicy.",
+      });
+    }
+
+    if (assetPlan.iconSystems.length < definition.platform.length) {
+      push({
+        severity: "medium",
+        area: "assets",
+        summary: "Belum ada icon system untuk setiap platform.",
+        detail: "Setiap platform butuh satu keluarga ikon yang konsisten agar tidak tercampur.",
+        artifacts: ["assetPlan"],
+        suggestion: "Tambahkan satu icon system per platform target.",
+      });
+    }
+
+    for (const system of assetPlan.iconSystems) {
+      if (system.mappings.length === 0) {
+        push({
+          severity: "low",
+          area: "assets",
+          summary: `Icon system ${system.platform} belum memetakan aksi ke ikon.`,
+          detail: "Coding agent butuh nama ikon konkret agar tidak menebak.",
+          artifacts: ["assetPlan"],
+          suggestion: "Tambahkan mapping aksi ke nama ikon untuk platform tersebut.",
+        });
+      }
+    }
+
+    const licenses = assetPlan.sources.map((source) => source.license.toLowerCase());
+    if (licenses.some((license) => /unknown|tbd|pending|unverified|unresolved|verify/.test(license))) {
+      push({
+        severity: "high",
+        area: "assets",
+        summary: "Ada sumber aset dengan lisensi yang belum jelas.",
+        detail: "Lisensi tidak boleh berupa unknown, pending, atau verify-before-use.",
+        artifacts: ["assetPlan"],
+        suggestion: "Ganti dengan sumber gratis yang lisensinya jelas, atau hapus aset tersebut.",
+      });
+    }
+
+    for (const source of assetPlan.sources) {
+      if (!/^https?:\/\//i.test(source.officialUrl)) {
+        push({
+          severity: "medium",
+          area: "assets",
+          summary: `Sumber aset ${source.id} tidak punya URL resmi yang valid.`,
+          detail: `officialUrl "${source.officialUrl}" tidak diawali http/https.`,
+          artifacts: ["assetPlan"],
+          suggestion: "Isi URL resmi sumber aset, atau hapus sumber tersebut.",
+        });
+      }
+    }
+
+    for (const asset of assetPlan.assets) {
+      if (!sourceIds.has(asset.sourceId)) {
+        push({
+          severity: "high",
+          area: "assets",
+          summary: `Aset ${asset.id} merujuk sumber yang tidak ada.`,
+          detail: `sourceId "${asset.sourceId}" tidak ditemukan pada daftar sources.`,
+          artifacts: ["assetPlan"],
+          suggestion: "Perbaiki sourceId aset atau tambahkan sumbernya.",
+        });
+      }
+      if (asset.screenIds.length === 0) {
+        push({
+          severity: "medium",
+          area: "assets",
+          summary: `Aset ${asset.id} tidak dipakai di layar mana pun.`,
+          detail: "Aset tanpa layar tidak bisa diimplementasikan dan biasanya hanya dekorasi.",
+          artifacts: ["assetPlan", "uiDesign"],
+          suggestion: "Tautkan aset ke layar yang memakainya, atau hapus aset tersebut.",
+        });
+      }
+      for (const screenId of asset.screenIds) {
+        if (!screenIdSet.has(screenId)) {
+          push({
+            severity: "medium",
+            area: "assets",
+            summary: `Aset ${asset.id} merujuk layar yang tidak ada.`,
+            detail: `screenId "${screenId}" tidak ditemukan pada UI design.`,
+            artifacts: ["assetPlan", "uiDesign"],
+            suggestion: "Perbaiki rujukan layar aset tersebut.",
+          });
+        }
+      }
+      if (!/^[a-z0-9_./-]+\.[a-z0-9]{1,8}$/i.test(asset.destinationPath) || asset.destinationPath.startsWith("/") || asset.destinationPath.includes("..")) {
+        push({
+          severity: "medium",
+          area: "assets",
+          summary: `Aset ${asset.id} punya destinationPath yang tidak aman.`,
+          detail: `"${asset.destinationPath}" harus berupa path relatif di dalam repository dengan nama file dan ekstensi.`,
+          artifacts: ["assetPlan"],
+          suggestion: "Gunakan path repository-local seperti public/assets/nama-file.svg.",
+        });
+      }
+      if (!asset.fallback.trim()) {
+        push({
+          severity: "medium",
+          area: "assets",
+          summary: `Aset ${asset.id} tidak punya fallback.`,
+          detail: "Tanpa fallback, aset yang gagal dimuat merusak layout.",
+          artifacts: ["assetPlan"],
+          suggestion: "Dokumentasikan fallback yang bisa diimplementasikan tanpa aset tersebut.",
+        });
+      }
+    }
+
+    for (const screen of uiDesign?.screens ?? []) {
+      for (const assetId of screen.assetIds) {
+        if (!assetIds.has(assetId)) {
+          push({
+            severity: "medium",
+            area: "assets",
+            summary: `Layar "${screen.name}" merujuk aset yang tidak ada.`,
+            detail: `assetId "${assetId}" tidak ditemukan pada asset plan.`,
+            artifacts: ["uiDesign", "assetPlan"],
+            suggestion: "Perbaiki rujukan aset layar tersebut.",
+          });
+        }
+      }
+    }
+  }
+
   const phases = allowedPhases(definition, features);
   const phaseSet = new Set(phases);
+  const designScreenIds = new Set((uiDesign?.screens ?? []).map((screen) => screen.id));
+  const assetPlanIds = new Set((assetPlan?.assets ?? []).map((asset) => asset.id));
   for (const task of tasks) {
     if (!phaseSet.has(task.phase)) {
       push({
@@ -168,6 +414,36 @@ export function runDeterministicChecks(input: ValidationInput): ConsistencyIssue
         detail: "Task tanpa dependency berisiko dikerjakan sebelum fondasinya siap.",
         artifacts: ["tasks"],
         suggestion: "Tautkan task ini ke task fondasi yang relevan bila memang ada ketergantungan.",
+      });
+    }
+    if (task.screenIds.some((id) => !designScreenIds.has(id))) {
+      push({
+        severity: "medium",
+        area: "tasks",
+        summary: `Task ${task.id} merujuk screen id yang tidak ada.`,
+        detail: `Screen yang tidak ditemukan: ${task.screenIds.filter((id) => !designScreenIds.has(id)).join(", ")}.`,
+        artifacts: ["tasks", "uiDesign"],
+        suggestion: "Samakan screenIds task dengan layar yang ada di UI design specification.",
+      });
+    }
+    if (task.assetIds.some((id) => !assetPlanIds.has(id))) {
+      push({
+        severity: "medium",
+        area: "tasks",
+        summary: `Task ${task.id} merujuk asset id yang tidak ada.`,
+        detail: `Aset yang tidak ditemukan: ${task.assetIds.filter((id) => !assetPlanIds.has(id)).join(", ")}.`,
+        artifacts: ["tasks", "assetPlan"],
+        suggestion: "Samakan assetIds task dengan aset yang ada di asset plan.",
+      });
+    }
+    if (isUiTask(task) && (task.type === "frontend" || task.type === "integration") && task.screenIds.length === 0 && (uiDesign?.screens.length ?? 0) > 0) {
+      push({
+        severity: "low",
+        area: "tasks",
+        summary: `Task UI ${task.id} tidak merujuk screen id mana pun.`,
+        detail: "Task yang merender antarmuka sebaiknya menunjuk layar konkret dari UI design specification.",
+        artifacts: ["tasks", "uiDesign"],
+        suggestion: "Tambahkan screenIds yang sesuai pada task tersebut.",
       });
     }
     if (task.requirements.length > 8) {
