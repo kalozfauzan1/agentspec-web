@@ -442,5 +442,6 @@ export type ConsistencyIssue = z.infer<typeof consistencyIssueSchema>;
 export const consistencyReportSchema = z.object({
   checkedAt: z.number(),
   issues: z.array(consistencyIssueSchema).default([]),
+  autoFixed: z.number().default(0),
 });
 export type ConsistencyReport = z.infer<typeof consistencyReportSchema>;

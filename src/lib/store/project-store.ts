@@ -20,6 +20,7 @@ import {
 import { callStep, generateArtifacts, runValidationStep, type PipelineStage } from "@/lib/pipeline/run";
 import { useSettingsStore } from "./settings-store";
 import { createId } from "@/lib/utils";
+import { buildRepairInstruction, isBlockingIssue, planRepairs } from "@/lib/validation/issues";
 
 interface ProgressState {
   label: string;
@@ -52,6 +53,7 @@ interface ProjectStoreState {
   generateSpecification: (id: string) => Promise<void>;
   regenerateArtifacts: (id: string, keys: ArtifactKey[]) => Promise<void>;
   validatePackage: (id: string) => Promise<void>;
+  autoFixIssues: (id: string) => Promise<number>;
   applyInstruction: (
     id: string,
     target: ArtifactKey | "definition",
@@ -64,6 +66,62 @@ interface ProjectStoreState {
 
 function provider(): ProviderSettings {
   return useSettingsStore.getState().settings.provider;
+}
+
+const AUTO_FIX_ROUNDS = 2;
+
+interface EditStepResult {
+  summary?: string;
+  affected?: ArtifactKey[];
+  patch?: Partial<ProjectRecord["artifacts"]> & { definition?: ProjectRecord["definition"] };
+  warnings?: string[];
+}
+
+function editBody(project: ProjectRecord, target: ArtifactKey | "definition", instruction: string) {
+  return {
+    target,
+    instruction,
+    definition: project.definition,
+    prd: project.artifacts.prd,
+    features: project.artifacts.features,
+    flows: project.artifacts.flows,
+    uiDesign: project.artifacts.uiDesign,
+    assetPlan: project.artifacts.assetPlan,
+    architecture: project.artifacts.architecture,
+    dataModel: project.artifacts.dataModel,
+    api: project.artifacts.api,
+    tasks: project.artifacts.tasks,
+    agentInstructions: project.artifacts.agentInstructions,
+  };
+}
+
+function applyEditPatch(
+  project: ProjectRecord,
+  patch: NonNullable<EditStepResult["patch"]>,
+  affected: ArtifactKey[],
+): ProjectRecord {
+  const { definition, ...artifactPatch } = patch;
+  const artifactStatus = { ...project.artifactStatus };
+
+  for (const key of ARTIFACT_KEYS) {
+    if (!(key in artifactPatch)) continue;
+    artifactStatus[key] = { status: "ready", error: null, warnings: [], updatedAt: Date.now() };
+  }
+  for (const key of affected) {
+    artifactStatus[key] = {
+      status: "stale",
+      error: null,
+      warnings: [],
+      updatedAt: artifactStatus[key]?.updatedAt ?? null,
+    };
+  }
+
+  return {
+    ...project,
+    definition: definition ?? project.definition,
+    artifacts: { ...project.artifacts, ...artifactPatch },
+    artifactStatus,
+  };
 }
 
 function statusPatch(
@@ -308,7 +366,12 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       }));
 
       if (result.failed.length === 0) {
+        set({ progress: { label: "memeriksa konsistensi", value: 100 } });
         await get().validatePackage(id);
+        const issues = get().active?.validation?.issues ?? [];
+        if (issues.some(isBlockingIssue)) {
+          await get().autoFixIssues(id);
+        }
       }
     } catch (error) {
       set({ error: toErrorState(error) });
@@ -375,7 +438,8 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
       const result = await runValidationStep(project, provider());
       await get().patchProject((current) => ({
         ...current,
-        validation: { checkedAt: Date.now(), issues: result.issues },
+        // A fresh check starts the automatic-repair counter over.
+        validation: { checkedAt: Date.now(), issues: result.issues, autoFixed: 0 },
       }));
       if (result.warnings.length > 0) {
         set({ warnings: [...new Set([...get().warnings, ...result.warnings])] });
@@ -385,34 +449,91 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
     }
   },
 
+  autoFixIssues: async (id) => {
+    // Demo mode cannot rewrite anything, so there is nothing to repair.
+    if (provider().mode !== "live") return 0;
+
+    set({ busy: true, error: null, progress: { label: "memeriksa temuan", value: 100 } });
+    let fixed = 0;
+
+    try {
+      for (let round = 0; round < AUTO_FIX_ROUNDS; round += 1) {
+        const project = await get().openProject(id);
+        if (!project) break;
+
+        const issues = project.validation?.issues ?? [];
+        const blocking = issues.filter(isBlockingIssue);
+        if (blocking.length === 0) break;
+
+        const plans = planRepairs(blocking, issues);
+        if (plans.length === 0) break;
+
+        const affected = new Set<ArtifactKey>();
+        for (const [index, plan] of plans.entries()) {
+          set({
+            busyStage: plan.target,
+            progress: {
+              label: `perbaikan otomatis ${index + 1}/${plans.length}`,
+              value: Math.round((index / plans.length) * 100),
+            },
+          });
+
+          const current = await get().openProject(id);
+          if (!current) break;
+
+          const response = await callStep<EditStepResult>(
+            "edit",
+            editBody(current, plan.target, buildRepairInstruction(plan.target, plan.issues)),
+            provider(),
+          );
+          const affectedKeys = (response.affected ?? []).filter((key) =>
+            (ARTIFACT_KEYS as readonly string[]).includes(key),
+          );
+          for (const key of affectedKeys) affected.add(key);
+
+          await get().patchProject((state) =>
+            applyEditPatch(state, response.patch ?? {}, affectedKeys),
+          );
+        }
+
+        if (affected.size > 0) {
+          await get().regenerateArtifacts(id, [...affected]);
+        } else {
+          await get().validatePackage(id);
+        }
+
+        const after = await get().openProject(id);
+        const remaining = (after?.validation?.issues ?? []).map((issue) => issue.summary);
+        fixed += issues.filter((issue) => !remaining.includes(issue.summary)).length;
+        if (!(after?.validation?.issues ?? []).some(isBlockingIssue)) break;
+      }
+
+      if (fixed > 0) {
+        await get().patchProject((project) =>
+          project.validation
+            ? { ...project, validation: { ...project.validation, autoFixed: fixed } }
+            : project,
+        );
+      }
+      return fixed;
+    } catch (error) {
+      // A failed repair pass must not discard the package that was generated (PRD NFR-003).
+      set({ error: { message: `Perbaikan otomatis belum berhasil: ${toErrorState(error).message}` } });
+      return fixed;
+    } finally {
+      set({ busy: false, busyStage: null, progress: null });
+    }
+  },
+
   applyInstruction: async (id, target, instruction) => {
     set({ busy: true, busyStage: target as PipelineStage, error: null });
     try {
       const project = await get().openProject(id);
       if (!project) throw new Error("Proyek tidak ditemukan.");
 
-      const response = await callStep<{
-        summary: string;
-        affected: ArtifactKey[];
-        patch: Partial<ProjectRecord["artifacts"]> & { definition?: ProjectRecord["definition"] };
-        warnings?: string[];
-      }>(
+      const response = await callStep<EditStepResult>(
         "edit",
-        {
-          target,
-          instruction,
-          definition: project.definition,
-          prd: project.artifacts.prd,
-          features: project.artifacts.features,
-          flows: project.artifacts.flows,
-          uiDesign: project.artifacts.uiDesign,
-          assetPlan: project.artifacts.assetPlan,
-          architecture: project.artifacts.architecture,
-          dataModel: project.artifacts.dataModel,
-          api: project.artifacts.api,
-          tasks: project.artifacts.tasks,
-          agentInstructions: project.artifacts.agentInstructions,
-        },
+        editBody(project, target, instruction),
         provider(),
       );
 
@@ -420,36 +541,21 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
         (ARTIFACT_KEYS as readonly string[]).includes(key),
       );
 
-      await get().patchProject((current) => {
-        const nextArtifacts = { ...current.artifacts, ...response.patch };
-        const artifactStatus = { ...current.artifactStatus };
-        for (const key of affected) {
-          artifactStatus[key] = {
-            status: "stale",
-            error: null,
-            warnings: [],
-            updatedAt: artifactStatus[key]?.updatedAt ?? null,
-          };
-        }
-        return {
-          ...current,
-          definition: response.patch.definition ?? current.definition,
-          artifacts: nextArtifacts,
-          artifactStatus,
-          editHistory: [
-            {
-              id: `edit-${Date.now()}`,
-              instruction,
-              summary: response.summary ?? "",
-              at: Date.now(),
-              scope: target,
-              affected,
-              succeeded: true,
-            },
-            ...current.editHistory,
-          ],
-        };
-      });
+      await get().patchProject((current) => ({
+        ...applyEditPatch(current, response.patch ?? {}, affected),
+        editHistory: [
+          {
+            id: `edit-${Date.now()}`,
+            instruction,
+            summary: response.summary ?? "",
+            at: Date.now(),
+            scope: target,
+            affected,
+            succeeded: true,
+          },
+          ...current.editHistory,
+        ],
+      }));
 
       if (affected.length > 0) {
         await get().regenerateArtifacts(id, affected);

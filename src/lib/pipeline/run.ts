@@ -1,9 +1,10 @@
-import type {
-  ArtifactKey,
-  ArtifactStatus,
-  ProjectArtifacts,
-  ProjectRecord,
-  ProviderSettings,
+import {
+  ARTIFACT_META,
+  type ArtifactKey,
+  type ArtifactStatus,
+  type ProjectArtifacts,
+  type ProjectRecord,
+  type ProviderSettings,
 } from "@/lib/schemas";
 import { providerOverrideHeaders } from "@/lib/store/settings-store";
 
@@ -218,7 +219,7 @@ export async function generateArtifacts(options: GenerateOptions) {
 
     onStageStart?.(key);
     onProgress?.({
-      label: key,
+      label: ARTIFACT_META[key].label,
       value: Math.round((index / Math.max(1, work.length)) * 100),
     });
 

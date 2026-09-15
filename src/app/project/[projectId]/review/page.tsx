@@ -23,6 +23,7 @@ import {
 } from "@/lib/schemas";
 import { ARTIFACT_ORDER } from "@/lib/pipeline/run";
 import { useProjectStore } from "@/lib/store/project-store";
+import { isBlockingIssue } from "@/lib/validation/issues";
 
 const STRATEGY_COPY: Record<ImplementationStrategy, string> = {
   "frontend-first":
@@ -96,6 +97,7 @@ export default function ProjectReviewPage() {
     (key) => active.artifactStatus[key]?.status === "ready",
   );
   const hasOutput = readyArtifacts.length > 0;
+  const blockingIssues = (active.validation?.issues ?? []).filter(isBlockingIssue);
 
   return (
     <>
@@ -440,7 +442,7 @@ export default function ProjectReviewPage() {
               {progress && generating && (
                 <div>
                   <div className="mb-2 flex items-center justify-between text-[12px] text-muted-foreground">
-                    <span>Sedang membuat: {progress.label}</span>
+                    <span>Sedang diproses: {progress.label}</span>
                     <span>{progress.value}%</span>
                   </div>
                   <Progress value={progress.value} />
@@ -490,9 +492,10 @@ export default function ProjectReviewPage() {
                 </Alert>
               )}
 
-              {active.validation && active.validation.issues.length > 0 && (
-                <Alert tone="warning" title={`${active.validation.issues.length} temuan konsistensi`}>
-                  Buka Overview di workspace untuk melihat daftar temuan dan cara memperbaikinya.
+              {blockingIssues.length > 0 && (
+                <Alert tone="warning" title={`${blockingIssues.length} hal perlu dibereskan`}>
+                  Buka Overview di workspace untuk melihat detailnya. AgentSpec juga bisa mencoba
+                  memperbaikinya otomatis.
                 </Alert>
               )}
 

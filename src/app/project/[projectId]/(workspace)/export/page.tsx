@@ -26,6 +26,7 @@ import {
 } from "@/lib/export/package";
 import { ARTIFACT_KEYS, ARTIFACT_META } from "@/lib/schemas";
 import { useProjectStore } from "@/lib/store/project-store";
+import { isBlockingIssue } from "@/lib/validation/issues";
 
 interface TreeNode {
   name: string;
@@ -107,9 +108,7 @@ export default function ExportPage() {
     { key: "assetPlan" as const, label: "Asset Plan" },
   ].filter((entry) => active.artifactStatus[entry.key]?.status !== "ready");
 
-  const highSeverityIssues = (active.validation?.issues ?? []).filter(
-    (issue) => issue.severity === "high",
-  );
+  const highSeverityIssues = (active.validation?.issues ?? []).filter(isBlockingIssue);
 
   const blockedReason =
     visualBlockers.length > 0
@@ -117,7 +116,7 @@ export default function ExportPage() {
           .map((entry) => entry.label)
           .join(" dan ")} belum siap.`
       : highSeverityIssues.length > 0
-        ? `Package diblokir karena ada ${highSeverityIssues.length} temuan konsistensi berlevel tinggi. Perbaiki dulu di Overview.`
+        ? `Package belum bisa diunduh karena ada ${highSeverityIssues.length} hal yang perlu dibereskan. Buka Overview, lalu jalankan "Perbaiki otomatis" atau minta perubahannya lewat kolom AI.`
         : null;
 
   const copy = async (value: string, label: string) => {

@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { ARTIFACT_KEYS, type ArtifactKey, type ArtifactStatus } from "@/lib/schemas";
 import { useProjectStore } from "@/lib/store/project-store";
 import { useSettingsStore } from "@/lib/store/settings-store";
+import { isBlockingIssue } from "@/lib/validation/issues";
 
 const NAV_GROUPS: {
   label: string | null;
@@ -149,6 +150,7 @@ export function WorkspaceShell({
   const failedCount = ARTIFACT_KEYS.filter(
     (key) => active.artifactStatus[key]?.status === "failed",
   ).length;
+  const blockingCount = (active.validation?.issues ?? []).filter(isBlockingIssue).length;
 
   return (
     <div className="flex min-h-screen">
@@ -239,8 +241,11 @@ export function WorkspaceShell({
                 {failedCount} dokumen gagal
               </Badge>
             )}
-            {active.validation && active.validation.issues.length > 0 && (
-              <Badge tone="warning">{active.validation.issues.length} temuan</Badge>
+            {blockingCount > 0 && (
+              <Badge tone="warning">
+                <AlertTriangle className="size-3" />
+                {blockingCount} perlu diperbaiki
+              </Badge>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">

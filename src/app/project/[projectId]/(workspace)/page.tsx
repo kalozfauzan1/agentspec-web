@@ -1,18 +1,22 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
   AlertTriangle,
   ArrowRight,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   History,
   Info,
+  Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
 import { DecisionSourceBadge } from "@/components/review/tech-decisions";
 import { SubHeading } from "@/components/spec/section-header";
 import {
@@ -20,9 +24,12 @@ import {
   ARTIFACT_META,
   IMPLEMENTATION_STRATEGY_LABEL,
   type ArtifactKey,
+  type ConsistencyIssue,
 } from "@/lib/schemas";
 import { useProjectStore } from "@/lib/store/project-store";
-import { formatRelative } from "@/lib/utils";
+import { useSettingsStore } from "@/lib/store/settings-store";
+import { ISSUE_SEVERITY_LABEL, issueArtifactLabel, splitIssues } from "@/lib/validation/issues";
+import { cn, formatRelative } from "@/lib/utils";
 
 const ARTIFACT_ROUTES: Record<ArtifactKey, string> = {
   prd: "/prd",
@@ -40,7 +47,9 @@ const ARTIFACT_ROUTES: Record<ArtifactKey, string> = {
 export default function OverviewPage() {
   const params = useParams<{ projectId: string }>();
   const projectId = params.projectId;
-  const { active, busy } = useProjectStore();
+  const { active, busy, autoFixIssues } = useProjectStore();
+  const providerMode = useSettingsStore((state) => state.settings.provider.mode);
+  const [showNotes, setShowNotes] = useState(false);
 
   if (!active) return null;
   const definition = active.definition;
@@ -68,7 +77,9 @@ export default function OverviewPage() {
   const readyCount = ARTIFACT_KEYS.filter(
     (key) => active.artifactStatus[key]?.status === "ready",
   ).length;
-  const issues = active.validation?.issues ?? [];
+  const { blocking, optional } = splitIssues(active.validation?.issues ?? []);
+  const autoFixed = active.validation?.autoFixed ?? 0;
+  const packageReady = readyCount === ARTIFACT_KEYS.length;
 
   return (
     <div className="space-y-6">
@@ -94,51 +105,90 @@ export default function OverviewPage() {
         </div>
       </header>
 
-      {issues.length > 0 && (
+      {blocking.length > 0 ? (
         <Card className="border-warning-border">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="size-4 text-warning" />
-              Consistency check · {issues.length} temuan
+              {blocking.length} hal perlu dibereskan sebelum package dipakai
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            {issues.map((issue) => (
-              <div
-                key={issue.id}
-                className="rounded-card border border-border bg-surface-muted px-4 py-3"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge
-                    tone={
-                      issue.severity === "high"
-                        ? "danger"
-                        : issue.severity === "medium"
-                          ? "warning"
-                          : "neutral"
-                    }
-                  >
-                    {issue.severity}
-                  </Badge>
-                  <span className="text-[13px] font-medium text-foreground">{issue.summary}</span>
-                  {issue.artifacts.length > 0 && (
-                    <span className="font-mono text-[11px] text-muted-foreground">
-                      {issue.artifacts.join(", ")}
-                    </span>
-                  )}
-                </div>
-                {issue.detail && (
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
-                    {issue.detail}
-                  </p>
-                )}
-                {issue.suggestion && (
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-foreground-soft">
-                    <span className="font-medium">Saran:</span> {issue.suggestion}
-                  </p>
+            <p className="text-[13px] leading-relaxed text-muted-foreground">
+              Perbaikan otomatis belum menyelesaikan semuanya. Coba perbaiki otomatis sekali lagi,
+              atau minta perubahan lewat kolom di bawah dengan bahasa biasa.
+            </p>
+            {blocking.map((issue) => (
+              <IssueCard key={issue.id} issue={issue} />
+            ))}
+            <div className="flex flex-wrap items-center gap-3">
+              {providerMode === "live" ? (
+                <Button size="sm" onClick={() => void autoFixIssues(projectId)} disabled={busy}>
+                  {busy ? <Spinner /> : <Sparkles />}
+                  Perbaiki otomatis
+                </Button>
+              ) : (
+                <p className="text-[12px] text-muted-foreground">
+                  Aktifkan provider AI di Settings supaya AgentSpec bisa memperbaikinya otomatis.
+                </p>
+              )}
+              {active.validation && (
+                <span className="text-[11px] text-muted-foreground">
+                  Diperiksa {formatRelative(active.validation.checkedAt)}
+                </span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      ) : packageReady ? (
+        <Card className="border-success-border">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2">
+              <CheckCircle2 className="size-4 text-success" />
+              Spesifikasi siap dipakai
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-[13px] leading-relaxed text-foreground-soft">
+              {active.validation
+                ? `Semua ${ARTIFACT_KEYS.length} dokumen sudah dibuat dan konsisten dengan project definition.`
+                : `Semua ${ARTIFACT_KEYS.length} dokumen sudah dibuat.`}
+              {autoFixed > 0 && ` ${autoFixed} catatan konsistensi sudah dibenahi otomatis.`}
+              {optional.length > 0 &&
+                ` ${optional.length} catatan kecil tersisa dan boleh diabaikan — tidak menghalangi export.`}
+            </p>
+            <Button size="sm" asChild>
+              <Link href={`/project/${projectId}/export`}>
+                Buka Export
+                <ArrowRight />
+              </Link>
+            </Button>
+            {optional.length > 0 && (
+              <div className="rounded-card border border-border">
+                <button
+                  type="button"
+                  onClick={() => setShowNotes((value) => !value)}
+                  className="flex w-full items-center justify-between gap-2 rounded-t-card bg-surface-muted px-4 py-2.5 text-left"
+                >
+                  <span className="text-[12px] font-medium text-foreground-soft">
+                    Lihat {optional.length} catatan opsional
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      "size-4 text-faint-foreground transition-transform",
+                      showNotes && "rotate-180",
+                    )}
+                  />
+                </button>
+                {showNotes && (
+                  <div className="space-y-3 border-t border-border p-4">
+                    {optional.map((issue) => (
+                      <IssueCard key={issue.id} issue={issue} />
+                    ))}
+                  </div>
                 )}
               </div>
-            ))}
+            )}
             {active.validation && (
               <p className="text-[11px] text-muted-foreground">
                 Diperiksa {formatRelative(active.validation.checkedAt)}
@@ -146,7 +196,7 @@ export default function OverviewPage() {
             )}
           </CardContent>
         </Card>
-      )}
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-6">
@@ -329,6 +379,40 @@ export default function OverviewPage() {
           </Card>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function IssueCard({ issue }: { issue: ConsistencyIssue }) {
+  return (
+    <div className="rounded-card border border-border bg-surface-muted px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge
+          tone={
+            issue.severity === "high"
+              ? "danger"
+              : issue.severity === "medium"
+                ? "warning"
+                : "neutral"
+          }
+        >
+          {ISSUE_SEVERITY_LABEL[issue.severity]}
+        </Badge>
+        <span className="text-[13px] font-medium text-foreground">{issue.summary}</span>
+      </div>
+      {issue.detail && (
+        <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">{issue.detail}</p>
+      )}
+      {issue.suggestion && (
+        <p className="mt-1.5 text-[13px] leading-relaxed text-foreground-soft">
+          <span className="font-medium">Saran:</span> {issue.suggestion}
+        </p>
+      )}
+      {issue.artifacts.length > 0 && (
+        <p className="mt-1.5 text-[11px] text-muted-foreground">
+          Dokumen terkait: {issue.artifacts.map(issueArtifactLabel).join(", ")}
+        </p>
+      )}
     </div>
   );
 }
