@@ -69,7 +69,7 @@ import {
   buildSpecDigest,
   type EditTarget,
 } from "./prompts";
-import { AiError, callModel, type ProviderConfig } from "./provider";
+import { AiError, callModel, modelForStep, type ProviderConfig } from "./provider";
 
 export const STEP_KEYS = [
   "analyze",
@@ -348,13 +348,16 @@ async function generate<T>(params: {
     return parsed.data;
   }
 
-  const result = await callModel(config, {
-    system: prompt.system,
-    user: prompt.user,
-    json: true,
-    temperature,
-    maxTokens: STEP_MAX_TOKENS[step],
-  });
+  const result = await callModel(
+    { ...config, model: modelForStep(config.model, step) },
+    {
+      system: prompt.system,
+      user: prompt.user,
+      json: true,
+      temperature,
+      maxTokens: STEP_MAX_TOKENS[step],
+    },
+  );
 
   return parseWithSchema(schema, result.content, {
     step,
@@ -363,13 +366,16 @@ async function generate<T>(params: {
       // The retry keeps the original instructions so the model still knows the
       // required shape; weak providers truncate long answers even when they
       // report finish_reason "stop", so compaction happens on every retry.
-      const repaired = await callModel(config, {
-        system: `${prompt.system}\n\n${COMPACT_INSTRUCTION}`,
-        user: `${prompt.user}\n\nNOTE: the previous attempt failed (${problem}). Answer again, complete and compact.`,
-        json: true,
-        temperature: 0,
-        maxTokens: STEP_MAX_TOKENS[step] ?? 12_000,
-      });
+      const repaired = await callModel(
+        { ...config, model: modelForStep(config.model, step) },
+        {
+          system: `${prompt.system}\n\n${COMPACT_INSTRUCTION}`,
+          user: `${prompt.user}\n\nNOTE: the previous attempt failed (${problem}). Answer again, complete and compact.`,
+          json: true,
+          temperature: 0,
+          maxTokens: STEP_MAX_TOKENS[step] ?? 12_000,
+        },
+      );
       return repaired.content;
     },
   });
@@ -738,6 +744,8 @@ export async function runStep(
       const architecture = request.architecture ?? null;
       const uiDesign = request.uiDesign ?? null;
       const assetPlan = request.assetPlan ?? null;
+      const dataModel = request.dataModel ?? null;
+      const api = request.api ?? null;
       const taskSchemaShape = z.object({ tasks: z.array(taskSchema).default([]) });
 
       let collected: ImplementationTask[] = [];
@@ -747,7 +755,7 @@ export async function runStep(
           step,
           config,
           schema: taskSchemaShape,
-          prompt: promptTasks(definition, features, architecture, undefined, uiDesign, assetPlan),
+          prompt: promptTasks(definition, features, architecture, undefined, uiDesign, assetPlan, dataModel, api),
           demo: () => ({ tasks: demoTasks(definition, features, architecture, uiDesign, assetPlan) }),
           temperature: 0.4,
         });
@@ -759,7 +767,13 @@ export async function runStep(
 
         for (const stage of stages) {
           const knownTasks = collected.map((task) => ({ id: task.id, title: task.title }));
-          const results = await Promise.all(stage.map(async (batch, stageIndex) => {
+          // Bounded concurrency (2): unbounded Promise.all over up to 6
+          // batches overloads the provider → slow responses → 504 cascade.
+          // Limit 2 keeps independent batches overlapping (see test) while
+          // capping provider pressure.
+          const results: ImplementationTask[][] = new Array(stage.length).fill([]);
+          const runOne = async (batchIndex: number) => {
+            const batch = stage[batchIndex];
             let generated: ImplementationTask[] = [];
             await runBatch(`Task ${batch.label}`, warnings, async () => {
               const result = await generate({
@@ -771,7 +785,7 @@ export async function runStep(
                   batch.features.length > 0 ? batch.features : features,
                   architecture,
                   {
-                    index: completedBatches + stageIndex + 1,
+                    index: completedBatches + batchIndex + 1,
                     total,
                     label: batch.label,
                     phases: batch.phases,
@@ -781,6 +795,8 @@ export async function runStep(
                   },
                   uiDesign,
                   assetPlan,
+                  dataModel,
+                  api,
                 ),
                 demo: () => ({ tasks: [] }),
                 temperature: 0.4,
@@ -790,8 +806,23 @@ export async function runStep(
                 warnings.push(`Batch task "${batch.label}" tidak menghasilkan task apa pun.`);
               }
             });
-            return generated;
-          }));
+            results[batchIndex] = generated;
+          };
+          const workers: Promise<void>[] = [];
+          let next = 0;
+          const workerCount = Math.min(2, stage.length);
+          for (let w = 0; w < workerCount; w += 1) {
+            workers.push(
+              (async () => {
+                while (next < stage.length) {
+                  const current = next;
+                  next += 1;
+                  await runOne(current);
+                }
+              })(),
+            );
+          }
+          await Promise.all(workers);
 
           for (const tasks of results) {
             const rebased = rebaseTaskIds(tasks, collected.length + 1);

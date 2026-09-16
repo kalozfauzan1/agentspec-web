@@ -3,6 +3,7 @@ import {
   apiSpecSchema,
   architectureSpecSchema,
   assetPlanSpecSchema,
+  canonicalSpecSchema,
   consistencyReportSchema,
   dataModelSpecSchema,
   documentSchema,
@@ -134,6 +135,7 @@ export const projectArtifactsSchema = z.object({
   api: apiSpecSchema.nullable().default(null),
   tasks: z.array(taskSchema).default([]),
   agentInstructions: documentSchema.nullable().default(null),
+  canonical: canonicalSpecSchema.default(() => canonicalSpecSchema.parse({})),
 });
 export type ProjectArtifacts = z.infer<typeof projectArtifactsSchema>;
 

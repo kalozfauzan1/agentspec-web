@@ -69,6 +69,10 @@ export class StepError extends Error {
   }
 }
 
+const STEP_TIMEOUT_MS = 285_000;
+const STEP_RETRYABLE_CODES = new Set(["step-failed", "provider-busy", "timeout", "gateway-timeout"]);
+const STEP_RETRYABLE_STATUS = new Set([502, 503, 504]);
+
 export async function callStep<T>(
   step: string,
   body: Record<string, unknown>,
@@ -79,38 +83,79 @@ export async function callStep<T>(
     Object.assign(headers, providerOverrideHeaders(provider));
   }
 
-  const response = await fetch(`/api/ai/${step}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ mode: provider.mode, ...body }),
-  });
+  let lastError: StepError | null = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), STEP_TIMEOUT_MS);
+    try {
+      const response = await fetch(`/api/ai/${step}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ mode: provider.mode, ...body }),
+        signal: controller.signal,
+      });
 
-  const text = await response.text();
-  let payload: unknown = null;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch {
-    payload = null;
+      const text = await response.text();
+      let payload: unknown = null;
+      try {
+        payload = text ? JSON.parse(text) : null;
+      } catch {
+        payload = null;
+      }
+
+      if (!response.ok) {
+        const message =
+          payload && typeof payload === "object" && "error" in payload
+            ? String((payload as { error: unknown }).error)
+            : `Permintaan gagal (${response.status}).`;
+        const code =
+          payload && typeof payload === "object" && "code" in payload
+            ? String((payload as { code: unknown }).code)
+            : "step-failed";
+        lastError = new StepError(friendlyStepMessage(response.status, code, message), code);
+        if (
+          attempt < 2 &&
+          (STEP_RETRYABLE_STATUS.has(response.status) || STEP_RETRYABLE_CODES.has(code))
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+          continue;
+        }
+        throw lastError;
+      }
+
+      return payload as T & { warnings?: string[] };
+    } catch (error) {
+      if (error instanceof StepError) throw error;
+      if (error instanceof Error && error.name === "AbortError") {
+        lastError = new StepError(
+          `Langkah "${step}" melebihi batas waktu. Coba generate ulang dokumen ini saja.`,
+          "gateway-timeout",
+        );
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
+          continue;
+        }
+        throw lastError;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+  throw lastError ?? new StepError("Langkah gagal.", "step-failed");
+}
 
-  if (!response.ok) {
-    const message =
-      payload && typeof payload === "object" && "error" in payload
-        ? String((payload as { error: unknown }).error)
-        : `Permintaan gagal (${response.status}).`;
-    const code =
-      payload && typeof payload === "object" && "code" in payload
-        ? String((payload as { code: unknown }).code)
-        : "step-failed";
-    throw new StepError(message, code);
+function friendlyStepMessage(status: number, code: string, message: string) {
+  if (status === 504 || code === "timeout" || code === "gateway-timeout") {
+    return `Langkah memakan waktu terlalu lama (504). Progress yang sudah jadi tidak hilang — coba generate ulang dokumen ini saja. Detail: ${message}`;
   }
-
-  return payload as T & { warnings?: string[] };
+  return message;
 }
 
 function bodyForArtifact(key: ArtifactKey, project: ProjectRecord) {
   const definition = project.definition;
-  const { features, architecture, dataModel, tasks, uiDesign, assetPlan } = project.artifacts;
+  const { features, architecture, dataModel, tasks, uiDesign, assetPlan, api, flows } =
+    project.artifacts;
 
   switch (key) {
     case "features":
@@ -130,7 +175,9 @@ function bodyForArtifact(key: ArtifactKey, project: ProjectRecord) {
     case "api":
       return { definition, features, dataModel, architecture };
     case "tasks":
-      return { definition, features, architecture, uiDesign, assetPlan };
+      // Tasks stabilize last: they need canonical API + data model + flows
+      // so they REFER to operationIds/tables instead of inventing them.
+      return { definition, features, architecture, uiDesign, assetPlan, dataModel, api, flows };
     case "agentInstructions":
       return { definition, architecture, tasks, uiDesign, assetPlan };
   }

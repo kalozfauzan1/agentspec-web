@@ -140,24 +140,30 @@ export function normalizeTasks(
   definition: ProjectDefinition | null,
 ): ImplementationTask[] {
   const phases = allowedPhases(definition, features);
-  const featureIds = new Set(features.map((feature) => feature.id));
-  const requirementIds = new Set(
-    features.flatMap((feature) => feature.requirements.map((requirement) => requirement.id)),
-  );
 
   const { tasks: identified, idMap } = assignTaskIds(input);
-  const idSet = new Set(identified.map((task) => task.id));
   const phaseRank = new Map(phases.map((phase, index) => [phase, index]));
 
   const prepared: ImplementationTask[] = identified.map((task) => {
     const phase = resolvePhase(task.phase, task.type, phases, phaseRank);
-    const dependencies = task.dependencies
-      .map((dependency) => idMap.get(dependency.toUpperCase().trim()) ?? dependency.toUpperCase().trim())
-      .filter((dependency) => idSet.has(dependency) && dependency !== task.id);
-    const references = task.references
-      .map((reference) => reference.toUpperCase().trim())
-      .filter((reference) => requirementIds.size === 0 || requirementIds.has(reference));
-    const featureId = featureIds.has(task.featureId) ? task.featureId : "";
+    // Preserve unknown dependency/reference ids so the deterministic
+    // validator can flag them instead of silently dropping invention.
+    const dependencies = unique(
+      task.dependencies
+        .map((dependency) => {
+          const raw = dependency.toUpperCase().trim();
+          if (!raw) return "";
+          return idMap.get(raw) ?? raw;
+        })
+        .filter(Boolean),
+    ).filter((dependency) => dependency !== task.id);
+    const references = unique(
+      task.references.map((reference) => reference.toUpperCase().trim()).filter(Boolean),
+    );
+    const featureId = task.featureId?.trim() ?? "";
+    const apiOperations = unique(
+      (task.apiOperations ?? []).map((op) => op.trim()).filter(Boolean),
+    );
     const isFrontendFacing = task.type === "frontend" || task.type === "integration";
 
     return {
@@ -166,8 +172,12 @@ export function normalizeTasks(
       featureId,
       dependencies: unique(dependencies),
       references: unique(references),
+      apiOperations,
       requirements: unique(task.requirements),
+      implementationNotes: unique(task.implementationNotes ?? []),
       acceptanceCriteria: unique(task.acceptanceCriteria),
+      validationCommands: unique(task.validationCommands ?? []),
+      goal: task.goal?.trim() ?? "",
       uiStates: isFrontendFacing ? unique(task.uiStates) : [],
       screenIds: unique(task.screenIds),
       assetIds: unique(task.assetIds),
@@ -190,15 +200,9 @@ export function normalizeTasks(
     (a, b) => (rank.get(a.id)! - rank.get(b.id)!) || (depth.get(a.id)! - depth.get(b.id)!),
   );
 
-  // Drop dependency edges that point forward after ordering so the listed
-  // order always satisfies every task's dependencies.
-  const position = new Map(ordered.map((task, index) => [task.id, index]));
-  return ordered.map((task) => ({
-    ...task,
-    dependencies: task.dependencies.filter(
-      (dependency) => (position.get(dependency) ?? -1) < (position.get(task.id) ?? 0),
-    ),
-  }));
+  // Keep dependency edges intact so the DAG validator can flag forward
+  // references and cycles instead of silently dropping them.
+  return ordered;
 }
 
 function resolvePhase(
@@ -298,7 +302,6 @@ function topologicalSort(
 /* ------------------------------------------------------------------ */
 
 export function normalizeApi(input: ApiSpec, features: FeatureSpec[]): ApiSpec {
-  const featureIds = new Set(features.map((feature) => feature.id));
   const usedIds = new Set<string>();
   const byRoute = new Map<string, number>();
   const endpoints: ApiSpec["endpoints"] = [];
@@ -307,7 +310,8 @@ export function normalizeApi(input: ApiSpec, features: FeatureSpec[]): ApiSpec {
     .filter((endpoint) => endpoint.path.trim().length > 0)
     .forEach((endpoint, index) => {
       const path = endpoint.path.startsWith("/") ? endpoint.path : `/${endpoint.path}`;
-      const featureId = featureIds.has(endpoint.featureId) ? endpoint.featureId : "";
+      // Preserve unknown featureIds so validators flag them (no silent blanking).
+      const featureId = endpoint.featureId?.trim() ?? "";
       const routeKey = `${endpoint.method} ${path.toLowerCase()}`;
       const existingIndex = byRoute.get(routeKey);
 
@@ -333,13 +337,27 @@ export function normalizeApi(input: ApiSpec, features: FeatureSpec[]): ApiSpec {
         usedIds,
         `endpoint-${index + 1}`,
       );
+      const operationId =
+        endpoint.operationId?.trim() ||
+        `${endpoint.method.toLowerCase()}${path
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .split("-")
+          .filter(Boolean)
+          .map((part) => part[0].toUpperCase() + part.slice(1))
+          .join("")}`;
 
       byRoute.set(routeKey, endpoints.length);
       endpoints.push({
         ...endpoint,
         id,
+        operationId,
         path,
         featureId,
+        requirementIds: unique(
+          (endpoint.requirementIds ?? []).map((r) => r.toUpperCase().trim()).filter(Boolean),
+        ),
         errors: endpoint.errors.filter((error) => error.status.trim().length > 0),
       });
     });
@@ -355,13 +373,12 @@ export function normalizeDataModel(input: DataModelSpec): DataModelSpec {
       name: entity.name.trim(),
       fields: entity.fields.filter((field) => field.name.trim().length > 0),
     }));
-  const names = new Set(entities.map((entity) => entity.name.toLowerCase()));
+  // Preserve relationships (even to unknown entities) so validators flag drift.
   return {
     ...input,
     entities,
     relationships: input.relationships.filter(
-      (relationship) =>
-        names.has(relationship.from.toLowerCase()) && names.has(relationship.to.toLowerCase()),
+      (relationship) => relationship.from.trim().length > 0 && relationship.to.trim().length > 0,
     ),
   };
 }
@@ -405,7 +422,7 @@ function normalizeComponents(list: DesignComponent[]): DesignComponent[] {
 }
 
 export function normalizeUiDesign(input: UiDesignSpec, features: FeatureSpec[]): UiDesignSpec {
-  const featureIds = new Set(features.map((feature) => feature.id));
+  void features;
   const usedScreenIds = new Set<string>();
 
   const components = normalizeComponents(input.components);
@@ -420,7 +437,7 @@ export function normalizeUiDesign(input: UiDesignSpec, features: FeatureSpec[]):
         `screen-${index + 1}`,
       ),
       name: screen.name.trim(),
-      featureId: featureIds.has(screen.featureId) ? screen.featureId : "",
+      featureId: screen.featureId?.trim() ?? "",
       purpose: screen.purpose.trim(),
       layout: unique(screen.layout),
       components: unique(screen.components),
@@ -531,7 +548,7 @@ export function normalizeUiDesign(input: UiDesignSpec, features: FeatureSpec[]):
 }
 
 export function normalizeAssetPlan(input: AssetPlanSpec, uiDesign: UiDesignSpec | null): AssetPlanSpec {
-  const knownScreenIds = new Set((uiDesign?.screens ?? []).map((screen) => screen.id));
+  void uiDesign;
   const sources = dedupeBy(
     input.sources
       .filter((source) => source.id.trim().length > 0)
@@ -548,7 +565,6 @@ export function normalizeAssetPlan(input: AssetPlanSpec, uiDesign: UiDesignSpec 
       })),
     (source) => source.id.toLowerCase(),
   );
-  const knownSourceIds = new Set(sources.map((source) => source.id));
   const usedAssetIds = new Set<string>();
 
   const assets = dedupeBy(
@@ -559,7 +575,8 @@ export function normalizeAssetPlan(input: AssetPlanSpec, uiDesign: UiDesignSpec 
         id: uniqueId(slugId(asset.id, `asset-${index + 1}`), usedAssetIds, `asset-${index + 1}`),
         type: asset.type.trim(),
         purpose: asset.purpose.trim(),
-        screenIds: unique(asset.screenIds).filter((id) => knownScreenIds.has(id)),
+        // Preserve unknown screenIds/sourceIds so validators flag them.
+        screenIds: unique(asset.screenIds.map((id) => id.trim()).filter(Boolean)),
         placement: asset.placement.trim(),
         sourceMethod: asset.sourceMethod.trim(),
         sourceId: asset.sourceId.trim(),
@@ -574,11 +591,6 @@ export function normalizeAssetPlan(input: AssetPlanSpec, uiDesign: UiDesignSpec 
         platformVariants: unique(asset.platformVariants),
         license: asset.license.trim(),
         attribution: asset.attribution.trim(),
-      }))
-      .filter((asset) => asset.screenIds.length > 0)
-      .map((asset) => ({
-        ...asset,
-        sourceId: knownSourceIds.has(asset.sourceId) ? asset.sourceId : sources[0]?.id ?? asset.sourceId,
       })),
     (asset) => asset.id.toLowerCase(),
   );

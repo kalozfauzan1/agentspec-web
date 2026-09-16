@@ -558,12 +558,15 @@ export function renderAssetPlan(plan: AssetPlanSpec): string {
 
 export function renderTask(task: ImplementationTask, phaseIndex: number): string {
   const parts: string[] = [`# ${task.id} — ${task.title}`, ""];
+  if (task.goal) parts.push(`> Goal: ${task.goal}`, "");
   parts.push("| Field | Value |", "| --- | --- |");
   parts.push(`| Type | ${task.type} |`);
   parts.push(`| Phase | ${phaseIndex}. ${task.phase} |`);
   if (task.featureId) parts.push(`| Feature | \`${task.featureId}\` |`);
   parts.push(`| Dependencies | ${task.dependencies.join(", ") || "None"} |`);
   if (task.references.length > 0) parts.push(`| References | ${task.references.join(", ")} |`);
+  if ((task.apiOperations ?? []).length > 0)
+    parts.push(`| API Operations | ${(task.apiOperations ?? []).map((op) => `\`${op}\``).join(", ")} |`);
   if (task.optional) parts.push("| Optional | yes |");
   parts.push("");
 
@@ -589,6 +592,14 @@ export function renderTask(task: ImplementationTask, phaseIndex: number): string
   if (task.requirements.length > 0) {
     parts.push("## Requirements", "", task.requirements.map((item) => `- ${item}`).join("\n"), "");
   }
+  if ((task.implementationNotes ?? []).length > 0) {
+    parts.push(
+      "## Implementation Notes",
+      "",
+      (task.implementationNotes ?? []).map((item) => `- ${item}`).join("\n"),
+      "",
+    );
+  }
   if (task.uiStates.length > 0) {
     parts.push(
       "## UI States",
@@ -605,8 +616,99 @@ export function renderTask(task: ImplementationTask, phaseIndex: number): string
       "",
     );
   }
+  if ((task.validationCommands ?? []).length > 0) {
+    parts.push(
+      "## Validation Commands",
+      "",
+      "```bash",
+      ...(task.validationCommands ?? []),
+      "```",
+      "",
+    );
+  }
+  if (task.references.length > 0 || (task.apiOperations ?? []).length > 0) {
+    const refs = [
+      ...task.references.map((r) => `- Requirement \`${r}\``),
+      ...(task.apiOperations ?? []).map((op) => `- API operation \`${op}\``),
+    ];
+    parts.push("## References", "", refs.join("\n"), "");
+  }
 
   return `${parts.join("\n")}\n`;
+}
+
+export function renderOpenApi(project: ProjectRecord): string {
+  const endpoints = project.artifacts.api?.endpoints ?? [];
+  const lines: string[] = [
+    "openapi: 3.0.3",
+    "info:",
+    `  title: ${project.definition?.name ?? "Project"} API`,
+    "  version: 1.0.0",
+    "paths:",
+  ];
+  for (const endpoint of endpoints) {
+    const operationId = endpoint.operationId ?? endpoint.id;
+    lines.push(
+      `  ${endpoint.path}:`,
+      `    ${endpoint.method.toLowerCase()}:`,
+      `      operationId: ${operationId}`,
+      `      summary: ${(endpoint.purpose ?? "").replace(/:/g, " -")}`,
+      `      x-feature-id: ${endpoint.featureId || "cross-cutting"}`,
+      `      x-requirement-ids: [${(endpoint.requirementIds ?? []).join(", ")}]`,
+      `      responses:`,
+      `        '200':`,
+      `          description: OK`,
+    );
+  }
+  if (endpoints.length === 0) lines.push("  {}");
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderCanonicalSpec(project: ProjectRecord): string {
+  return JSON.stringify(
+    {
+      requirements: project.artifacts.features.flatMap((feature) =>
+        feature.requirements.map((req) => ({
+          id: req.id,
+          text: req.text,
+          feature: feature.id,
+        })),
+      ),
+      entities: (project.artifacts.dataModel?.entities ?? []).map((entity) => ({
+        name: entity.name,
+        fields: entity.fields.map((field) => field.name),
+      })),
+      apiOperations: (project.artifacts.api?.endpoints ?? []).map((endpoint) => ({
+        operationId: endpoint.operationId ?? endpoint.id,
+        method: endpoint.method,
+        path: endpoint.path,
+        requirementIds: endpoint.requirementIds ?? [],
+      })),
+      screens: (project.artifacts.uiDesign?.screens ?? []).map((screen) => screen.id),
+    },
+    null,
+    2,
+  );
+}
+
+export function renderValidationSummary(project: ProjectRecord): string {
+  const issues = project.validation?.issues ?? [];
+  const blocking = issues.filter((issue) => issue.severity === "high");
+  const reqIds = project.artifacts.features.flatMap((f) => f.requirements.map((r) => r.id));
+  const covered = new Set(
+    project.artifacts.tasks.flatMap((t) => t.references.map((r) => r.toUpperCase())),
+  );
+  const coveredCount = reqIds.filter((id) => covered.has(id.toUpperCase())).length;
+  return [
+    "## Specification validation",
+    "",
+    `- Status: ${blocking.length === 0 ? "PASS" : "FAIL"}`,
+    `- Requirements covered: ${coveredCount}/${reqIds.length}`,
+    `- API references valid: ${project.artifacts.api?.endpoints.length ?? 0} endpoints`,
+    `- Task graph: ${blocking.some((i) => i.area === "tasks") ? "invalid" : "valid"}`,
+    `- Critical inconsistencies: ${blocking.length}`,
+    "",
+  ].join("\n");
 }
 
 export function renderProductBrief(definition: ProjectDefinition): string {
@@ -692,6 +794,8 @@ This package was generated by AgentSpec. It is the source of truth for the imple
 | \`docs/architecture.md\` | Stack decisions with their source, boundaries, and data flow. |
 | \`docs/data-model.md\` | Entities, fields, constraints, and relationships. |
 | \`docs/api.md\` | Endpoint contract, including error cases. |
+| \`docs/openapi.yaml\` | Machine-readable API contract (operationIds). Tasks reference operationIds. |
+| \`docs/canonical-spec.json\` | Canonical requirement/entity/API/screen registry (source of truth). |
 | \`docs/features/*.md\` | One specification per core feature. |
 | \`tasks/README.md\` | Task index and execution order. |
 | \`tasks/TASK-*.md\` | Individual implementation tasks. |
@@ -699,6 +803,8 @@ This package was generated by AgentSpec. It is the source of truth for the imple
 ## Package Summary
 
 ${counts.join("\n")}
+
+${renderValidationSummary(project)}
 
 ## How To Use
 
@@ -801,7 +907,9 @@ export function buildPackageFiles(project: ProjectRecord): PackageFile[] {
   }
   if (artifacts.api) {
     files.push({ path: "docs/api.md", content: renderApi(artifacts.api) });
+    files.push({ path: "docs/openapi.yaml", content: renderOpenApi(project) });
   }
+  files.push({ path: "docs/canonical-spec.json", content: renderCanonicalSpec(project) });
   for (const feature of artifacts.features) {
     files.push({ path: `docs/features/${feature.id}.md`, content: renderFeature(feature) });
   }

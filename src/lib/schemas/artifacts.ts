@@ -158,12 +158,14 @@ export const httpMethodSchema = z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 export const endpointSchema = z.object({
   id: z.string().min(1),
+  operationId: z.string().optional(),
   method: httpMethodSchema,
   path: z.string().min(1),
   purpose: z.string().min(1),
   actor: z.string().default(""),
   authentication: z.enum(["required", "optional", "none"]).default("required"),
   featureId: z.string().default(""),
+  requirementIds: stringList.optional(),
   request: z.string().default(""),
   response: z.string().default(""),
   errors: z
@@ -202,17 +204,21 @@ export type TaskType = z.infer<typeof taskTypeSchema>;
 export const taskSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
+  goal: z.string().optional(),
   type: taskTypeSchema.default("frontend"),
   phase: z.string().min(1),
   featureId: z.string().default(""),
   dependencies: stringList.default([]),
   references: stringList.default([]),
+  apiOperations: stringList.optional(),
   contextDocs: stringList.default([]),
   requirements: stringList.default([]),
+  implementationNotes: stringList.optional(),
   uiStates: stringList.default([]),
   screenIds: stringList.default([]),
   assetIds: stringList.default([]),
   acceptanceCriteria: stringList.default([]),
+  validationCommands: stringList.optional(),
   optional: z.boolean().default(false),
 });
 export type ImplementationTask = z.infer<typeof taskSchema>;
@@ -445,3 +451,62 @@ export const consistencyReportSchema = z.object({
   autoFixed: z.number().default(0),
 });
 export type ConsistencyReport = z.infer<typeof consistencyReportSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Canonical structured spec — single source of truth                 */
+/* ------------------------------------------------------------------ */
+
+export const canonicalRequirementSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().default(""),
+  text: z.string().min(1),
+  featureId: z.string().min(1),
+});
+export type CanonicalRequirement = z.infer<typeof canonicalRequirementSchema>;
+
+export const canonicalEntitySchema = z.object({
+  name: z.string().min(1),
+  fields: stringList.default([]),
+});
+export type CanonicalEntity = z.infer<typeof canonicalEntitySchema>;
+
+export const canonicalEnumSchema = z.object({
+  name: z.string().min(1),
+  values: stringList.default([]),
+});
+export type CanonicalEnum = z.infer<typeof canonicalEnumSchema>;
+
+export const canonicalStateMachineSchema = z.object({
+  name: z.string().min(1),
+  states: stringList.default([]),
+  transitions: z.record(z.string(), stringList).default({}),
+});
+export type CanonicalStateMachine = z.infer<typeof canonicalStateMachineSchema>;
+
+export const canonicalApiOperationSchema = z.object({
+  operationId: z.string().min(1),
+  method: httpMethodSchema,
+  path: z.string().min(1),
+  requirementIds: stringList.default([]),
+  featureId: z.string().default(""),
+});
+export type CanonicalApiOperation = z.infer<typeof canonicalApiOperationSchema>;
+
+export const canonicalSpecSchema = z.object({
+  requirements: z.array(canonicalRequirementSchema).default([]),
+  entities: z.array(canonicalEntitySchema).default([]),
+  enums: z.array(canonicalEnumSchema).default([]),
+  stateMachines: z.array(canonicalStateMachineSchema).default([]),
+  apiOperations: z.array(canonicalApiOperationSchema).default([]),
+  screens: stringList.default([]),
+});
+export type CanonicalSpec = z.infer<typeof canonicalSpecSchema>;
+
+export const specGapSchema = z.object({
+  type: z.literal("SPEC_GAP"),
+  artifact: z.string().min(1),
+  feature: z.string().default(""),
+  requirement: z.string().default(""),
+  missing_domain_concept: z.string().min(1),
+});
+export type SpecGap = z.infer<typeof specGapSchema>;

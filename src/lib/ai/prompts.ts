@@ -29,7 +29,13 @@ GLOBAL RULES
 4. Only describe what the project definition allows. Never invent features, roles, entities, or endpoints outside it.
 5. Write concrete, implementable, testable statements. No marketing language, no filler, no placeholders like "TBD" or "lorem ipsum".
 6. Keep requirement identifiers stable, uppercase, and formatted like PANIC-001.
-7. Answer with valid JSON only. No markdown fences, no commentary, no trailing text.`;
+7. Answer with valid JSON only. No markdown fences, no commentary, no trailing text.
+
+CANONICAL SOURCE-OF-TRUTH RULES
+8. Generate strictly from the canonical specification provided in the request. Do not redefine requirements, entities, enums, states, identifiers, or domain rules.
+9. Do not invent missing domain concepts (fields, entities, enums, endpoints, screens). If required information is absent, return a SPEC_GAP entry: {"type":"SPEC_GAP","artifact":"<this-artifact>","feature":"<feature-id>","requirement":"<what needs it>","missing_domain_concept":"<Entity.field>"} instead of inventing it.
+10. All references must use canonical identifiers exactly: requirement IDs, entity/table names, field names, endpoint operationIds/paths, screen IDs, asset IDs, task IDs.
+11. Downstream artifacts must REFER to canonical IDs; they must never change the semantic meaning of a requirement ID.`;
 
 const frontendFirstRules = (phases: readonly string[]) => `Implementation phases for frontend-first (use these names exactly): ${phases.join(
   " → ",
@@ -700,6 +706,8 @@ RULES
 - Include the identifiers and timestamps a real implementation needs (id, created_at, updated_at) and foreign keys for relationships.
 - Relationships use "1:1", "1:N", or "N:M" between entity names that exist in the list.
 - Only model what the features require. Do not add entities for excluded scope.
+- Every field required by UI screens, API request/response shapes, or feature requirements MUST exist as a canonical entity field. Do not invent a field in UI/API without defining it here — if the need is unclear, downstream stages will emit SPEC_GAP instead.
+- Enum-valued fields (status, state) must declare their allowed values in constraints so a canonical enum can be derived; the same enum values must be reused by API and tasks.
 
 Return JSON:
 {
@@ -762,7 +770,9 @@ Specify the HTTP API that the frontend and the backend agree on.
 RULES
 - Only specify an API if the project needs one. If the architecture has no backend component, return { "overview": "…", "authentication": "", "endpoints": [] } and explain why in "overview".
 - One endpoint per concrete capability, including read endpoints for lists and detail views.
-- "request" and "response" are short JSON-ish sketches (field names and types), not full schemas.
+- All paths MUST use the versioned prefix "/api/v1/…" (never bare "/api/…"). Task generators must reference "operationId", never invent a URL from memory.
+- Every endpoint MUST set a stable kebab-case "operationId" (e.g. "getFulfillmentOrders") and list the canonical requirement IDs it implements in "requirementIds".
+- "request" and "response" are short JSON-ish sketches (field names and types), not full schemas. Every field named here MUST exist as a canonical entity field or be reported as SPEC_GAP — never invent persistence-free fields like roundingMode/priority without a data-model home.
 - Always list realistic error cases with status codes, including unauthenticated, forbidden, not found, and conflict cases.
 - Authentication is "required", "optional", or "none".
 - featureId must reference a provided feature id, or be an empty string for cross-cutting endpoints.
@@ -775,12 +785,14 @@ Return JSON:
   "endpoints": [
     {
       "id": "kebab-case",
+      "operationId": "camelCaseOperation",
       "method": "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
-      "path": "/api/…",
+      "path": "/api/v1/…",
       "purpose": "…",
       "actor": "Cashier",
       "authentication": "required",
       "featureId": "cashier-transaction",
+      "requirementIds": ["CASH-001"],
       "request": "{ field: type }",
       "response": "{ field: type }",
       "errors": [{ "status": "401", "meaning": "Unauthorized" }]
@@ -829,6 +841,8 @@ export function promptTasks(
   context?: TaskBatchContext,
   uiDesign: UiDesignSpec | null = null,
   assetPlan: AssetPlanSpec | null = null,
+  dataModel: DataModelSpec | null = null,
+  api: ApiSpec | null = null,
 ) {
   const strategy = definition.implementation.strategy;
   const phases = context?.phases ?? allowedPhasesForPrompt(definition, features);
@@ -883,21 +897,22 @@ IMPORTANT: This may be one batch of a larger plan. Do not invent phases outside 
 
 RULES
 - Every task must be small enough that a coding agent can finish it in one pass. Split large features: list screen, detail screen, form + validation, service layer, and so on.
-- Keep each string to one sentence (under about 200 characters).
+- Keep each string to one sentence (under about 200 characters), except acceptanceCriteria which must be verifiable Given/When/Then statements.
 - "type" is one of: foundation, frontend, backend, database, integration, testing, documentation.
-- "dependencies" may only reference task ids that exist in YOUR OWN output or in the list of tasks that already exist. Never reference an id you have not seen.
-- "references" may only contain requirement ids taken from the feature specifications above.
+- "dependencies" must be EXPLICIT and reference only task ids that exist in YOUR OWN output or in the list of tasks that already exist. Never reference an id you have not seen. Every task that needs mock infrastructure, database, auth/tenant context, or a prior foundation task MUST list it — never leave dependencies empty when infrastructure is required. The plan executes as a DAG on explicit dependencies, not on phase names.
+- "references" may only contain requirement ids taken from the feature specifications above. Every functional requirement must be covered by at least one task.
+- "apiOperations" must reference canonical endpoint operationIds (e.g. "getFulfillmentOrders") from the API specification. Never write a raw URL from memory — always reuse the canonical path.
 - "contextDocs" lists the documents the agent must read, using this exact vocabulary: docs/PRD.md, docs/features/<feature-id>.md, docs/user-flows.md, docs/ui-design.md, docs/asset-plan.md, docs/architecture.md, docs/data-model.md, docs/api.md, AGENTS.md.
 - The first frontend work must be one task that implements the design tokens and the shared component primitives from docs/ui-design.md, before any feature screen is built.
 - Every frontend or integration task that renders a screen must list docs/ui-design.md in "contextDocs", and its requirements must include implementing that screen exactly as the design specification describes it: its layout regions, the documented components and their variants, and the documented typography and spacing tokens — not a generic layout.
 - Frontend and integration tasks must describe the UI states they have to implement in "uiStates" (loading, empty, populated, error, validation, success, responsive) — only the ones that apply. The design specification lists the states per screen; keep them aligned.
-- No task may introduce a color, font size, spacing, or component that is missing from the design specification. When a screen needs something the specification does not cover, the task must say to extend the design specification first.
+- No task may introduce a color, font size, spacing, component, table, entity, column, enum, or endpoint that is missing from the canonical specification. When something is missing, emit the need in "implementationNotes" as SPEC_GAP instead of inventing it.
 - Every frontend or integration task that renders a screen must set "screenIds" to the exact screen ids it implements, taken from the design specification. Never invent a screen id.
 - Every task that renders or consumes media must set "assetIds" to the exact asset ids it needs, taken from the asset plan, and must state that the asset is downloaded to its documented local path with its documented fallback.
 - Install only the approved UI dependencies named in the design specification, and import only the individual icons that are used.
 - Include one testing task that runs the documented visual QA: it captures screenshots for every documented screen and state at each documented breakpoint and fixes every mismatch before completion.
-- "requirements" are imperative implementation requirements ("use ComplaintService interface", "use mock complaint service during the frontend phase").
-- "acceptanceCriteria" are objectively checkable.
+- "goal" is one sentence stating the task outcome. "requirements" are imperative implementation requirements ("use ComplaintService interface", "use mock complaint service during the frontend phase"). "implementationNotes" carry technical hints and SPEC_GAPs. "validationCommands" list relevant checks like "pnpm lint", "pnpm typecheck", "pnpm test", "pnpm build".
+- "acceptanceCriteria" are objectively checkable, preferably Given/When/Then (e.g. "Given a marketplace cancellation event for an existing reserved order, When the event is processed, Then reserved_qty decreases atomically and duplicate delivery does not release stock twice"). At least 3 criteria for backend/integration tasks.
 - Set "optional": true only for work that the definition explicitly marks as deferred or optional.
 - Do not invent scope. Every task must trace back to a feature or to foundation work.
 
@@ -907,22 +922,39 @@ Return JSON:
     {
       "id": "TASK-001",
       "title": "…",
+      "goal": "…",
       "type": "frontend",
       "phase": "Frontend Features",
       "featureId": "complaints",
       "dependencies": ["TASK-004"],
       "references": ["COMP-001"],
+      "apiOperations": ["getComplaints"],
       "contextDocs": ["docs/features/complaints.md"],
       "requirements": ["…"],
+      "implementationNotes": ["…"],
       "uiStates": ["loading", "empty", "error"],
       "screenIds": ["screen-id"],
       "assetIds": ["asset-id"],
-      "acceptanceCriteria": ["…"],
+      "acceptanceCriteria": ["Given …, When …, Then …"],
+      "validationCommands": ["pnpm lint", "pnpm typecheck", "pnpm test"],
       "optional": false
     }
   ]
 }`,
     user: `PROJECT DEFINITION\n${JSON.stringify(definition, null, 2)}
+
+CANONICAL REQUIREMENTS (id + meaning — REFER, never redefine)
+${JSON.stringify(
+  features.flatMap((feature) =>
+    feature.requirements.map((requirement) => ({
+      id: requirement.id,
+      text: requirement.text,
+      featureId: feature.id,
+    })),
+  ),
+  null,
+  2,
+)}
 
 FEATURES
 ${JSON.stringify(
@@ -932,6 +964,29 @@ ${JSON.stringify(
     actors: feature.actors,
     requirements: feature.requirements.map((requirement) => requirement.id),
     mainFlow: feature.mainFlow,
+  })),
+  null,
+  2,
+)}
+
+CANONICAL API OPERATIONS (reference operationId, never invent URLs)
+${JSON.stringify(
+  (api?.endpoints ?? []).map((endpoint) => ({
+    operationId: endpoint.operationId || endpoint.id,
+    method: endpoint.method,
+    path: endpoint.path,
+    requirementIds: endpoint.requirementIds ?? [],
+    featureId: endpoint.featureId,
+  })),
+  null,
+  2,
+)}
+
+CANONICAL ENTITIES (reference exact table/field names)
+${JSON.stringify(
+  (dataModel?.entities ?? []).map((entity) => ({
+    name: entity.name,
+    fields: entity.fields.map((field) => field.name),
   })),
   null,
   2,
@@ -1135,6 +1190,18 @@ ${JSON.stringify(
 /* Step: consistency validation (PRD §28)                             */
 /* ------------------------------------------------------------------ */
 
+function extractBusinessRules(prd: SpecDocument | null): string[] {
+  const rules: string[] = [];
+  for (const section of prd?.sections ?? []) {
+    if (!/business rule|edge case|constraint/i.test(section.title)) continue;
+    for (const block of section.blocks) {
+      if (block.type === "bullets" || block.type === "steps") rules.push(...block.items);
+      if (block.type === "paragraph" || block.type === "callout") rules.push(block.text);
+    }
+  }
+  return rules.slice(0, 40);
+}
+
 export function buildSpecDigest(input: {
   definition: ProjectDefinition | null;
   features: FeatureSpec[];
@@ -1156,17 +1223,27 @@ export function buildSpecDigest(input: {
     {
       definition: input.definition,
       prdSections: prdText,
+      prdBusinessRules: extractBusinessRules(input.prd),
       features: input.features.map((feature) => ({
         id: feature.id,
         name: feature.name,
-        requirements: feature.requirements.map((requirement) => requirement.id),
+        requirements: feature.requirements.map((requirement) => ({
+          id: requirement.id,
+          text: requirement.text,
+        })),
+        businessRules: feature.businessRules,
+        edgeCases: feature.edgeCases,
+        acceptanceCriteria: feature.acceptanceCriteria,
         actors: feature.actors,
+        mainFlow: feature.mainFlow,
       })),
       flows: input.flows.map((flow) => ({
         id: flow.id,
         name: flow.name,
         featureId: flow.featureId,
-        steps: flow.steps.length,
+        trigger: flow.trigger,
+        steps: flow.steps,
+        outcome: flow.outcome,
       })),
       uiDesign: input.uiDesign
         ? {
@@ -1222,23 +1299,38 @@ export function buildSpecDigest(input: {
           }
         : null,
       architecture: input.architecture?.decisions ?? [],
+      architectureRules: input.architecture?.rules ?? [],
       entities: input.dataModel?.entities.map((entity) => ({
         name: entity.name,
-        fields: entity.fields.map((field) => field.name),
+        fields: entity.fields.map((field) => ({
+          name: field.name,
+          type: field.type,
+          constraints: field.constraints,
+        })),
       })) ?? [],
+      relationships: input.dataModel?.relationships ?? [],
       endpoints: input.api?.endpoints.map((endpoint) => ({
+        operationId: endpoint.operationId ?? endpoint.id,
         method: endpoint.method,
         path: endpoint.path,
+        purpose: endpoint.purpose,
         featureId: endpoint.featureId,
+        requirementIds: endpoint.requirementIds ?? [],
+        request: endpoint.request,
+        response: endpoint.response,
       })) ?? [],
       tasks: input.tasks.map((task) => ({
         id: task.id,
         title: task.title,
+        goal: task.goal ?? "",
         phase: task.phase,
         type: task.type,
         featureId: task.featureId,
         references: task.references,
+        apiOperations: task.apiOperations ?? [],
         dependencies: task.dependencies,
+        requirements: task.requirements,
+        acceptanceCriteria: task.acceptanceCriteria,
       })),
       agentInstructionSections: input.agentInstructions?.sections.map((section) => section.title) ?? [],
     },
@@ -1252,34 +1344,40 @@ export function promptValidate(digest: string) {
     system: `${GLOBAL_RULES}
 
 TASK
-You are the consistency validator. Compare the generated specification package against the project definition and report contradictions, missing coverage, and scope violations.
+You are a software specification consistency auditor. Do not redesign the product. Do not introduce new requirements unless reporting a SPEC_GAP.
 
-CHECK FOR
-- A non-goal that is implemented anyway (a feature, endpoint, entity, or task that clearly provides it).
-- A feature without specification, or a specification without a feature.
-- An endpoint or entity that no feature requires.
-- A task that references a requirement id that does not exist, or a feature that no task implements.
-- A technology decision that contradicts an explicit user choice, or an "undecided" item that leaked a concrete technology.
-- A user flow that conflicts with a feature's main flow.
-- A feature whose user-facing screens are missing from the UI design specification, or a screen that belongs to no feature at all.
-- A frontend task that renders a screen the UI design specification does not describe, or a screen the design describes that no task implements.
-- A design decision that contradicts the architecture (a CSS framework or component library that cannot express the documented tokens).
-- A user-facing feature with no screen in the UI design, or a screen with no feature and no shared purpose.
-- A platform in the project definition without a platform profile in the UI design.
-- An asset that references a screen that does not exist, or an asset with no documented source, license, local path, or fallback.
-- An icon system or media asset that mixes sources inconsistently (for example two icon families on the same platform).
-- A screen that renders an asset the asset plan does not document, or an asset no screen uses.
-- Generic-template output: a dashboard KPI grid, a list/detail/table pattern, or a sign-in screen that the requirements never asked for.
-- Real coverage gaps: an MVP feature with no task at all, or a feature whose acceptance criteria cannot be verified.
-- A struct between documents: for example the architecture promises password hashes or a login endpoint but the data model has no such column, or a task depends on a document that does not exist.
+Analyze all generated artifacts against the canonical specification (requirement IDs with their texts, entities with fields, endpoints with operationIds/paths, screens).
+
+Validate:
+1. Every requirement ID has exactly one semantic meaning (same ID, different text = REQUIREMENT_SEMANTIC_MISMATCH).
+2. Every requirement exists in the canonical requirement registry.
+3. Every functional requirement has implementation task coverage (Requirement → Flow → API/operation → Task).
+4. Every API referenced by UI or task exists (operationId/path).
+5. Every entity/table/field referenced by API/task exists in the data model.
+6. Every UI-required field has a defined source (else SPEC_GAP, e.g. Product.brand, roundingMode, priority).
+7. Every API/domain field has a canonical representation.
+8. Enums are consistent across UI/API/feature/DB (e.g. fulfillment statuses).
+9. State machines are consistent across artifacts.
+10. Task dependencies reference valid tasks and the graph is acyclic with explicit foundational deps.
+11. Core user flows have end-to-end implementation coverage (e.g. webhook → ingest → dedupe → reserve → movement → broadcast).
+12. No business rule contradicts another artifact (e.g. reserved increment vs decrement, available = on_hand - reserved vs clamp-to-0).
+13. No downstream artifact silently introduces a new requirement/entity/endpoint.
+14. Acceptance criteria are testable (Given/When/Then preferred).
+15. API paths use the canonical /api/v1/ prefix consistently.
+
+CHECK ALSO FOR
+- A non-goal implemented anyway; a feature without spec; an endpoint/entity no feature requires.
+- A technology decision contradicting user choice; an "undecided" leaking technology.
+- A user flow conflicting with a feature main flow; missing screens; design contradicting architecture.
+- Assets with missing source/license/path/fallback; generic-template output never requested.
 
 DO NOT REPORT
-- Endpoints with an empty featureId: those are cross-cutting by design (authentication, health, reference data).
-- Requirement ids inside "definition.requirements": those entries are plain statements, not ids. Feature requirement ids (like MENU-001) are generated per feature and do not need to exist in the definition.
-- Prefix mismatches between features: each feature picks its own prefix on purpose.
-- Anything that is already listed as a non-goal in the definition.
+- Endpoints with an empty featureId: those are cross-cutting by design.
+- Requirement ids inside "definition.requirements": plain statements, not ids.
+- Prefix mismatches between features: each feature picks its own prefix.
+- Anything already listed as a non-goal.
 
-Report ONLY real problems you can point to in the data. If the package is consistent, return an empty issues array. Keep the report short and specific. Write "summary", "detail", and "suggestion" in Indonesian, because this report is shown to the user.
+Return structured findings only. Report ONLY real problems you can point to in the data. If consistent, return empty issues. Keep short and specific. Write "summary", "detail", "suggestion" in Indonesian.
 
 Return JSON:
 {

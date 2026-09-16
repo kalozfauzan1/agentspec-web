@@ -12,6 +12,9 @@ import type {
   UserFlow,
 } from "@/lib/schemas";
 import { allowedPhases } from "@/lib/ai/normalize";
+import { buildCanonicalSpec } from "@/lib/canonical/registry";
+import { computeRequirementCoverage } from "@/lib/validation/coverage";
+import { findMissingFoundationalDeps, validateTaskGraph } from "@/lib/validation/dag";
 
 export interface ValidationInput {
   definition: ProjectDefinition | null;
@@ -503,6 +506,203 @@ export function runDeterministicChecks(input: ValidationInput): ConsistencyIssue
         detail: `featureId "${endpoint.featureId}" tidak ditemukan.`,
         artifacts: ["api", "features"],
         suggestion: "Perbaiki rujukan feature atau hapus endpoint bila tidak dibutuhkan.",
+      });
+    }
+    // Single source of truth: versioned API prefix.
+    if (!endpoint.path.startsWith("/api/v1/")) {
+      push({
+        severity: "high",
+        area: "api",
+        summary: `Endpoint ${endpoint.method} ${endpoint.path} tidak memakai prefix /api/v1/.`,
+        detail: "Task generator harus mengambil path dari canonical API registry; path tanpa versi menyebabkan mismatch /api vs /api/v1.",
+        artifacts: ["api", "tasks"],
+        suggestion: "Ubah path ke bentuk /api/v1/… dan referensikan via operationId.",
+      });
+    }
+    for (const reqId of endpoint.requirementIds ?? []) {
+      if (!requirementOwners.has(reqId.toUpperCase().trim())) {
+        push({
+          severity: "high",
+          area: "api",
+          summary: `Endpoint ${endpoint.method} ${endpoint.path} merujuk requirement ${reqId} yang tidak ada.`,
+          detail: `Requirement "${reqId}" tidak ditemukan pada canonical requirement registry.`,
+          artifacts: ["api", "features"],
+          suggestion: "Samakan requirementIds endpoint dengan ID kanonis dari feature specifications.",
+        });
+      }
+    }
+  }
+
+  // Canonical registry — single source of truth for cross-document checks.
+  const canonical = buildCanonicalSpec({ features, dataModel, api, uiDesign });
+  const canonicalReqIds = new Set(canonical.requirements.map((r) => r.id.toUpperCase()));
+  const canonicalEntities = new Set(canonical.entities.map((e) => e.name.toLowerCase()));
+  const canonicalFields = new Set(
+    canonical.entities.flatMap((e) => e.fields.map((f) => f.toLowerCase())),
+  );
+  const canonicalOpIds = new Set(canonical.apiOperations.map((op) => op.operationId));
+
+  // Requirement → task coverage: every functional requirement needs a task.
+  for (const coverage of computeRequirementCoverage({ features, tasks, api })) {
+    if (coverage.status === "uncovered") {
+      push({
+        severity: "high",
+        area: "tasks",
+        summary: `Requirement ${coverage.requirement} tidak mempunyai implementation task.`,
+        detail: `REQUIREMENT_WITHOUT_IMPLEMENTATION: ${coverage.requirement} (feature ${coverage.featureId}) belum dicakup task, API ${coverage.covered_by_api.join(", ") || "—"}.`,
+        artifacts: ["tasks", "features"],
+        suggestion: "Tambahkan task implementasi untuk requirement ini sebelum final package PASS.",
+      });
+    }
+  }
+
+  // Task reference integrity against canonical registries.
+  for (const task of tasks) {
+    for (const ref of task.references) {
+      if (!canonicalReqIds.has(ref.toUpperCase().trim())) {
+        push({
+          severity: "high",
+          area: "tasks",
+          summary: `Task ${task.id} merujuk requirement ${ref} yang tidak ada di registry kanonis.`,
+          detail: `Unknown requirement ref "${ref}".`,
+          artifacts: ["tasks", "features"],
+          suggestion: "Samakan references task dengan requirement ID kanonis.",
+        });
+      }
+    }
+    if (task.featureId && !featureIds.has(task.featureId)) {
+      push({
+        severity: "medium",
+        area: "tasks",
+        summary: `Task ${task.id} merujuk feature "${task.featureId}" yang tidak ada.`,
+        detail: "FeatureId task tidak ditemukan pada feature specifications.",
+        artifacts: ["tasks", "features"],
+        suggestion: "Perbaiki featureId task tersebut.",
+      });
+    }
+    for (const op of task.apiOperations ?? []) {
+      if (op && !canonicalOpIds.has(op)) {
+        // Allow raw paths only if they exactly match a canonical route.
+        const byRoute = canonical.apiOperations.some(
+          (canonicalOp) => canonicalOp.path.toLowerCase() === op.toLowerCase(),
+        );
+        if (!byRoute) {
+          push({
+            severity: "high",
+            area: "tasks",
+            summary: `Task ${task.id} merujuk API operation "${op}" yang tidak ada.`,
+            detail: "Task harus mengambil operationId dari canonical API registry, bukan menulis URL manual.",
+            artifacts: ["tasks", "api"],
+            suggestion: "Ganti dengan operationId kanonis dari docs/api.md.",
+          });
+        }
+      }
+    }
+    if (task.acceptanceCriteria.length > 0 && task.acceptanceCriteria.length < 2 && (task.type === "backend" || task.type === "integration")) {
+      push({
+        severity: "medium",
+        area: "tasks",
+        summary: `Task ${task.id} acceptance criteria terlalu shallow.`,
+        detail: `Hanya ${task.acceptanceCriteria.length} kriteria; backend/integration butuh minimal 2 yang verifiable (Given/When/Then).`,
+        artifacts: ["tasks"],
+        suggestion: "Tambahkan acceptance criteria Given/When/Then + validationCommands.",
+      });
+    }
+  }
+
+  // Task DAG validation: refs exist, acyclic, foundational deps present.
+  const dag = validateTaskGraph(tasks);
+  for (const unknown of dag.unknownDependencies) {
+    push({
+      severity: "high",
+      area: "tasks",
+      summary: `Task ${unknown.taskId} bergantung pada ${unknown.dependency} yang tidak ada.`,
+      detail: "Referenced dependency tidak ditemukan; graph tidak valid.",
+      artifacts: ["tasks"],
+      suggestion: "Perbaiki dependencies ke task ID yang ada dan pastikan urutan DAG valid.",
+    });
+  }
+  if (dag.hasCycle) {
+    push({
+      severity: "high",
+      area: "tasks",
+      summary: "Task dependency graph mengandung cycle.",
+      detail: `Cycle melibatkan: ${dag.cycles.map((c) => c.join(", ")).join("; ")}.`,
+      artifacts: ["tasks"],
+      suggestion: "Putus cycle dengan mengatur ulang dependencies agar DAG acyclic.",
+    });
+  }
+  for (const missing of findMissingFoundationalDeps(tasks)) {
+    push({
+      severity: "medium",
+      area: "tasks",
+      summary: `Task dependency kemungkinan missing: ${missing}.`,
+      detail: "Task membutuhkan infrastructure/mock/auth tetapi dependencies kosong; execution engine DAG berjalan di explicit deps.",
+      artifacts: ["tasks"],
+      suggestion: "Tambahkan explicit dependency ke task fondasi yang relevan.",
+    });
+  }
+
+  // Entity/table drift: relationships must point at known entities.
+  const entityNames = new Set((dataModel?.entities ?? []).map((e) => e.name.toLowerCase()));
+  for (const rel of dataModel?.relationships ?? []) {
+    if (!entityNames.has(rel.from.toLowerCase()) || !entityNames.has(rel.to.toLowerCase())) {
+      push({
+        severity: "high",
+        area: "data-model",
+        summary: `Relationship ${rel.from} → ${rel.to} merujuk entity yang tidak ada.`,
+        detail: "Unknown entity ref; kemungkinan naming drift (mis. inventory_movement_logs vs inventory_audit_logs).",
+        artifacts: ["data-model"],
+        suggestion: "Samakan nama entity dengan canonical registry.",
+      });
+    }
+  }
+
+  // SPEC_GAP heuristic: API/UI fields without a canonical domain home.
+  const sketchText = [
+    ...(api?.endpoints ?? []).flatMap((e) => [e.request, e.response]),
+    ...(uiDesign?.screens ?? []).flatMap((s) => s.sampleContent),
+  ].join("\n");
+  const fieldCandidates = Array.from(
+    new Set(
+      (sketchText.match(/"([a-zA-Z][a-zA-Z0-9_]{2,})"\s*:/g) ?? []).map((m) =>
+        m.replace(/["\s:]/g, "").toLowerCase(),
+      ),
+    ),
+  );
+  const commonFields = new Set([
+    "id", "created_at", "updated_at", "name", "description", "status", "type",
+    "title", "email", "password", "token", "message", "data", "error", "page",
+    "limit", "offset", "total",
+  ]);
+  for (const field of fieldCandidates) {
+    if (!canonicalFields.has(field) && !commonFields.has(field)) {
+      push({
+        severity: "medium",
+        area: "data-model",
+        summary: `SPEC_GAP: field "${field}" dipakai API/UI tetapi tidak ada di data model.`,
+        detail: `Missing domain concept for "${field}"; jangan invent diam-diam — perluas canonical spec dulu.`,
+        artifacts: ["api", "data-model", "uiDesign"],
+        suggestion: `Tambahkan field "${field}" ke entity kanonis yang sesuai, lalu regenerate artifacts terdampak.`,
+      });
+      if (fieldCandidates.indexOf(field) > 7) break;
+    }
+  }
+
+  // Table-name drift heuristic: snake_case plurals in tasks without canonical entity.
+  const taskText = tasks.flatMap((t) => [...t.requirements, ...(t.implementationNotes ?? [])]).join("\n");
+  const tableCandidates = Array.from(
+    new Set((taskText.match(/\b[a-z]+_[a-z0-9_]{2,}s\b/g) ?? []).map((t) => t.toLowerCase())),
+  );
+  for (const table of tableCandidates.slice(0, 8)) {
+    if (!canonicalEntities.has(table)) {
+      push({
+        severity: "medium",
+        area: "tasks",
+        summary: `Task merujuk table "${table}" yang tidak ada di data model.`,
+        detail: `Unknown table "${table}"; kemungkinan drift (mis. inventory_audit_logs vs inventory_movement_logs).`,
+        artifacts: ["tasks", "data-model"],
+        suggestion: "Samakan nama table dengan canonical entity registry.",
       });
     }
   }

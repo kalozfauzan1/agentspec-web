@@ -10,6 +10,41 @@ export interface ProviderConfig {
 export const DEFAULT_BASE_URL = "https://9router.nalarlabs.tech/v1";
 export const DEFAULT_MODEL = "first";
 
+/**
+ * Model routing by stage: quality is a multiplier, but source-of-truth +
+ * validation must prevent corruption even with weaker models.
+ * Strong reasoning: interpretation, canonical spec, API/domain/data-model,
+ * tasks, semantic audit. Fast: PRD expansion, UI docs, formatting.
+ */
+const STEP_MODEL_TIER: Record<string, "strong" | "fast" | "strongest"> = {
+  analyze: "strong",
+  definition: "strong",
+  features: "strong",
+  prd: "fast",
+  flows: "fast",
+  uiDesign: "fast",
+  assetPlan: "fast",
+  architecture: "strong",
+  dataModel: "strong",
+  api: "strong",
+  tasks: "strong",
+  validate: "strongest",
+  edit: "strong",
+  agentInstructions: "fast",
+  clarify: "fast",
+};
+
+export function modelTierForStep(step: string): "strong" | "fast" | "strongest" {
+  return STEP_MODEL_TIER[step] ?? "strong";
+}
+
+export function modelForStep(baseModel: string, step: string): string {
+  // Per-step override via env: AGENTSPEC_MODEL_VALIDATE, etc.
+  const override = process.env[`AGENTSPEC_MODEL_${step.toUpperCase()}`]?.trim();
+  if (override) return override;
+  return baseModel;
+}
+
 export class AiError extends Error {
   code: string;
   httpStatus: number;
@@ -51,7 +86,6 @@ export function resolveProvider(
   const overrideBaseUrl = headers.get("x-agentspec-base-url")?.trim() ?? "";
   const overrideApiKey = headers.get("x-agentspec-api-key")?.trim() ?? "";
   const overrideModel = headers.get("x-agentspec-model")?.trim() ?? "";
-
   const apiKey = overrideApiKey || envApiKey();
   const baseUrl = (overrideBaseUrl || envBaseUrl()).replace(/\/+$/, "");
   const model = overrideModel || envModel();
@@ -96,6 +130,14 @@ const RETRYABLE_STATUS = new Set([402, 408, 409, 425, 429, 500, 502, 503, 504]);
  */
 const DEFAULT_MAX_TOKENS = 16_000;
 
+/**
+ * Total provider budget must stay under the API route maxDuration (300s).
+ * Per-attempt 90s × max 2 timeout retries ≈ 180s + backoff < 300s, so the
+ * server returns a controlled JSON error instead of a raw gateway 504.
+ */
+const PROVIDER_ATTEMPT_TIMEOUT_MS = 90_000;
+const PROVIDER_MAX_TIMEOUT_ATTEMPTS = 2;
+
 export async function callModel(config: ProviderConfig, options: CallOptions): Promise<ModelResult> {
   const body = {
     model: config.model,
@@ -111,10 +153,14 @@ export async function callModel(config: ProviderConfig, options: CallOptions): P
 
   const attempts = 3;
   let lastError: unknown = null;
+  let timeoutAttempts = 0;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 120_000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      options.timeoutMs ?? PROVIDER_ATTEMPT_TIMEOUT_MS,
+    );
     try {
       const response = await fetch(`${config.baseUrl}/chat/completions`, {
         method: "POST",
@@ -128,13 +174,18 @@ export async function callModel(config: ProviderConfig, options: CallOptions): P
 
       if (!response.ok) {
         const raw = await response.text();
+        // Gateway timeouts (504) from an overloaded provider should not be
+        // retried at full force — back off longer so the next attempt lands
+        // after the provider recovers.
         if (RETRYABLE_STATUS.has(response.status) && attempt < attempts) {
           lastError = new AiError(
             "provider-busy",
-            `Provider merespons ${response.status}. Mencoba ulang…`,
+            response.status === 504
+              ? "Provider AI kehabisan waktu (504). Menunggu lebih lama lalu mencoba ulang…"
+              : `Provider merespons ${response.status}. Mencoba ulang…`,
             response.status,
           );
-          await wait(attempt * 1500);
+          await wait(attempt * 1500 + Math.floor(Math.random() * 1000));
           continue;
         }
         throw new AiError(
@@ -185,8 +236,18 @@ export async function callModel(config: ProviderConfig, options: CallOptions): P
       }
       if (error instanceof AiError) throw error;
       if (error instanceof Error && error.name === "AbortError") {
-        lastError = new AiError("timeout", "Permintaan ke provider AI melebihi batas waktu.", 504);
-        if (attempt < attempts) continue;
+        timeoutAttempts += 1;
+        lastError = new AiError(
+          "timeout",
+          "Provider AI melebihi batas waktu 90 detik. Coba generate ulang dokumen ini saja (tombol retry per dokumen).",
+          504,
+        );
+        // Timeouts already consumed ~90s each; cap retries so the total stays
+        // under the server maxDuration instead of cascading into a gateway 504.
+        if (attempt < attempts && timeoutAttempts < PROVIDER_MAX_TIMEOUT_ATTEMPTS) {
+          await wait(attempt * 2000);
+          continue;
+        }
         throw lastError;
       }
       lastError = error;

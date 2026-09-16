@@ -68,7 +68,7 @@ function provider(): ProviderSettings {
   return useSettingsStore.getState().settings.provider;
 }
 
-const AUTO_FIX_ROUNDS = 2;
+const AUTO_FIX_ROUNDS = 3;
 
 interface EditStepResult {
   summary?: string;
@@ -191,6 +191,7 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
         api: null,
         tasks: [],
         agentInstructions: null,
+        canonical: { requirements: [], entities: [], enums: [], stateMachines: [], apiOperations: [], screens: [] },
       },
       artifactStatus: createEmptyArtifactStatus(),
       validation: null,
