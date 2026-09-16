@@ -2,11 +2,14 @@ import {
   ARTIFACT_META,
   type ArtifactKey,
   type ArtifactStatus,
+  type ImplementationTask,
   type ProjectArtifacts,
   type ProjectRecord,
   type ProviderSettings,
 } from "@/lib/schemas";
 import { providerOverrideHeaders } from "@/lib/store/settings-store";
+import { normalizeTasks } from "@/lib/ai/normalize";
+import { rebaseTaskIds, taskBatchStages } from "@/lib/ai/task-batches";
 
 export type PipelineStage = ArtifactKey | "definition" | "validation";
 
@@ -191,11 +194,33 @@ export interface ArtifactRunResult {
   warnings: string[];
 }
 
+export interface TasksBatchProgress {
+  done: number;
+  total: number;
+  label: string;
+}
+
+export interface RunArtifactHooks {
+  /** Fired after every tasks batch lands so the UI can persist partial work. */
+  onTasksBatch?: (
+    partial: ImplementationTask[],
+    progress: TasksBatchProgress,
+  ) => void | Promise<void>;
+}
+
 async function runArtifact(
   key: ArtifactKey,
   project: ProjectRecord,
   provider: ProviderSettings,
+  hooks: RunArtifactHooks = {},
 ): Promise<ArtifactRunResult> {
+  // Tasks are generated batch-by-batch over separate HTTP requests (one LLM
+  // call per request) so a 504 can only ever lose a single batch — the rest
+  // is already persisted. Demo mode stays on the single legacy call.
+  if (key === "tasks" && provider.mode === "live") {
+    return runTasksBatched(project, provider, hooks);
+  }
+
   const response = await callStep<Record<string, unknown>>(
     key,
     bodyForArtifact(key, project),
@@ -242,10 +267,130 @@ export interface GenerateOptions {
   onStageStart?: (stage: PipelineStage) => void;
   onResult?: (result: ArtifactRunResult) => void | Promise<void>;
   onProgress?: (progress: PipelineProgress) => void;
+  onTasksBatch?: RunArtifactHooks["onTasksBatch"];
+}
+
+/**
+ * Client-driven task planning: each batch is its own HTTP request carrying
+ * the full project context (server slices the prompt per batch), so no
+ * single request ever stacks 7+ LLM calls against the 300s server limit.
+ * Every landed batch is published immediately; a failed batch only costs
+ * itself and is retried on the next "generate tasks" run.
+ */
+export async function runTasksBatched(
+  project: ProjectRecord,
+  provider: ProviderSettings,
+  hooks: RunArtifactHooks = {},
+): Promise<ArtifactRunResult> {
+  const definition = project.definition;
+  if (!definition) {
+    throw new StepError("Project definition belum dibuat.", "missing-definition");
+  }
+  const { features, architecture, dataModel, uiDesign, assetPlan, api } = project.artifacts;
+  const body = { definition, features, architecture, uiDesign, assetPlan, dataModel, api };
+
+  const stages = taskBatchStages(definition, features);
+  const total = stages.flat().length;
+  let done = 0;
+  const collected: ImplementationTask[] = [];
+  const warnings: string[] = [];
+  const failedBatches: string[] = [];
+
+  for (const stage of stages) {
+    const knownTasks = collected.map((task) => ({ id: task.id, title: task.title }));
+    const results: ImplementationTask[][] = new Array(stage.length).fill([]);
+
+    const runOne = async (batchIndex: number) => {
+      const batch = stage[batchIndex];
+      try {
+        const response = await callStep<{ tasks: ImplementationTask[]; warnings?: string[] }>(
+          "tasksBatch",
+          {
+            ...body,
+            batch: {
+              index: done + batchIndex + 1,
+              total,
+              label: batch.label,
+              phases: batch.phases,
+              featureIds: batch.features.map((feature) => feature.id),
+              knownTasks,
+              nextTaskNumber: knownTasks.length + 1,
+            },
+          },
+          provider,
+        );
+        results[batchIndex] = Array.isArray(response.tasks) ? response.tasks : [];
+        if (Array.isArray(response.warnings)) warnings.push(...response.warnings);
+        if (results[batchIndex].length === 0) {
+          warnings.push(`Batch task "${batch.label}" tidak menghasilkan task apa pun.`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Batch gagal.";
+        failedBatches.push(batch.label);
+        warnings.push(`Batch task "${batch.label}" gagal: ${message}`);
+        results[batchIndex] = [];
+      }
+    };
+
+    // Bounded concurrency: 2 overlapping requests keep batches flowing
+    // without overloading the provider into a 504 cascade.
+    let next = 0;
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < Math.min(2, stage.length); w += 1) {
+      workers.push(
+        (async () => {
+          while (next < stage.length) {
+            const current = next;
+            next += 1;
+            await runOne(current);
+            done += 1;
+          }
+        })(),
+      );
+    }
+    await Promise.all(workers);
+
+    for (const tasks of results) {
+      collected.push(...rebaseTaskIds(tasks, collected.length + 1));
+    }
+    // Publish once per stage in index order so partial ids stay stable.
+    await hooks.onTasksBatch?.(normalizeTasks([...collected], features, definition), {
+      done,
+      total,
+      label: stage[stage.length - 1].label,
+    });
+  }
+
+  if (collected.length === 0) {
+    throw new StepError(
+      "Model tidak menghasilkan task apa pun. Coba generate ulang Tasks saja.",
+      "empty-artifact",
+    );
+  }
+
+  const tasks = normalizeTasks(collected, features, definition);
+  if (failedBatches.length > 0) {
+    warnings.push(
+      `${failedBatches.length} dari ${total} batch gagal (${failedBatches.join("; ")}). ` +
+        "Tasks yang sudah jadi tersimpan — generate ulang Tasks untuk melengkapi sisanya.",
+    );
+  }
+  for (const task of tasks) {
+    if (task.references.length === 0 && task.featureId) {
+      warnings.push(`${task.id} tidak punya rujukan requirement.`);
+    }
+  }
+  return {
+    key: "tasks",
+    status: "ready",
+    error: null,
+    patch: { tasks },
+    warnings: Array.from(new Set(warnings)).slice(0, 8),
+  };
 }
 
 export async function generateArtifacts(options: GenerateOptions) {
-  const { project, provider, keys, onResult, onStageStart, onProgress } = options;
+  const { project, provider, keys, onResult, onStageStart, onProgress, onTasksBatch } = options;
 
   const requested = new Set(keys);
   const plan = expandArtifactSet(keys);
@@ -286,7 +431,15 @@ export async function generateArtifacts(options: GenerateOptions) {
     }
 
     try {
-      const result = await runArtifact(key, current, provider);
+      const result = await runArtifact(key, current, provider, {
+        onTasksBatch: async (partial, progress) => {
+          current = {
+            ...current,
+            artifacts: { ...current.artifacts, tasks: partial },
+          };
+          await onTasksBatch?.(partial, progress);
+        },
+      });
       warnings.push(...result.warnings);
       current = {
         ...current,

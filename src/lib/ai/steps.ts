@@ -70,6 +70,7 @@ import {
   type EditTarget,
 } from "./prompts";
 import { AiError, callModel, modelForStep, type ProviderConfig } from "./provider";
+import { rebaseTaskIds, taskBatchStages } from "./task-batches";
 
 export const STEP_KEYS = [
   "analyze",
@@ -84,11 +85,23 @@ export const STEP_KEYS = [
   "dataModel",
   "api",
   "tasks",
+  "tasksBatch",
   "agentInstructions",
   "validate",
   "edit",
 ] as const;
 export type StepKey = (typeof STEP_KEYS)[number];
+
+export const taskBatchRequestSchema = z.object({
+  index: z.number().int().min(1),
+  total: z.number().int().min(1),
+  label: z.string().min(1),
+  phases: z.array(z.string().min(1)).min(1),
+  featureIds: z.array(z.string()).default([]),
+  knownTasks: z.array(z.object({ id: z.string().min(1), title: z.string().default("") })).default([]),
+  nextTaskNumber: z.number().int().min(1),
+});
+export type TaskBatchRequest = z.infer<typeof taskBatchRequestSchema>;
 
 export const stepRequestSchema = z.object({
   mode: z.enum(["live", "demo"]).optional(),
@@ -109,6 +122,7 @@ export const stepRequestSchema = z.object({
   agentInstructions: documentSchema.nullable().optional(),
   target: z.enum(EDIT_TARGETS).optional(),
   instruction: z.string().optional(),
+  batch: taskBatchRequestSchema.optional(),
 });
 export type StepRequest = z.infer<typeof stepRequestSchema>;
 
@@ -231,7 +245,8 @@ function providerFromRequest(request: StepRequest, config: ProviderConfig): Prov
  */
 const STEP_MAX_TOKENS: Partial<Record<StepKey, number>> = {
   features: 24_000,
-  tasks: 24_000,
+  tasks: 16_000,
+  tasksBatch: 16_000,
   uiDesign: 24_000,
   assetPlan: 24_000,
   prd: 20_000,
@@ -251,79 +266,6 @@ function chunk<T>(items: T[], size: number): T[][] {
     batches.push(items.slice(index, index + size));
   }
   return batches.length > 0 ? batches : [[]];
-}
-
-interface TaskBatch {
-  label: string;
-  phases: string[];
-  features: FeatureSpec[];
-}
-
-function taskBatchStages(
-  definition: ProjectDefinition,
-  features: FeatureSpec[],
-): TaskBatch[][] {
-  if (definition.implementation.strategy === "module-first") {
-    const planning = [
-      { label: "Foundation", phases: ["Foundation"], features: [] },
-      ...features.map((feature) => ({
-        label: `${feature.name} module`,
-        phases: [feature.name],
-        features: [feature],
-      })),
-    ];
-    return [
-      ...chunk(planning, 6),
-      [{ label: "Integration and validation", phases: ["Integration", "Testing & Validation"], features }],
-    ];
-  }
-
-  const groups = chunk(features, 4);
-  const planning = [
-    {
-      label: "Project and frontend foundation",
-      phases: ["Project Foundation", "Frontend Foundation"],
-      features: [],
-    },
-    ...groups.map((group, index) => ({
-      label: `Frontend features (part ${index + 1} of ${groups.length})`,
-      phases: ["Frontend Features"],
-      features: group,
-    })),
-    { label: "Backend foundation", phases: ["Backend Foundation"], features: [] },
-    ...groups.map((group, index) => ({
-      label: `Backend features (part ${index + 1} of ${groups.length})`,
-      phases: ["Backend Features"],
-      features: group,
-    })),
-  ];
-
-  return [
-    ...chunk(planning, 6),
-    [{
-      label: "Frontend completion, integration and validation",
-      phases: ["Frontend Completion", "Integration", "Testing & Validation"],
-      features,
-    }],
-  ];
-}
-
-function rebaseTaskIds(tasks: ImplementationTask[], start: number): ImplementationTask[] {
-  const format = (value: number) => `TASK-${String(value).padStart(3, "0")}`;
-  const idMap = new Map<string, string>();
-
-  tasks.forEach((task, index) => {
-    const raw = task.id.toUpperCase().trim();
-    if (!idMap.has(raw)) idMap.set(raw, format(start + index));
-  });
-
-  return tasks.map((task, index) => ({
-    ...task,
-    id: format(start + index),
-    dependencies: task.dependencies.map((dependency) => (
-      idMap.get(dependency.toUpperCase().trim()) ?? dependency
-    )),
-  }));
 }
 
 async function generate<T>(params: {
@@ -839,6 +781,67 @@ export async function runStep(
         }
       }
       return { step, payload: { tasks }, warnings: dedupeWarnings(warnings).slice(0, 5) };
+    }
+
+    case "tasksBatch": {
+      const definition = requireDefinition(request);
+      const features = request.features ?? [];
+      const batch = request.batch;
+      if (!batch) throw new AiError("missing-batch", "Batch task belum ditentukan.", 400);
+      const architecture = request.architecture ?? null;
+      const uiDesign = request.uiDesign ?? null;
+      const assetPlan = request.assetPlan ?? null;
+      const dataModel = request.dataModel ?? null;
+      const api = request.api ?? null;
+      const taskSchemaShape = z.object({ tasks: z.array(taskSchema).default([]) });
+
+      // Resolve and validate the batch scope: one request generates exactly
+      // one batch, so a 504 can only ever lose this batch — never the plan.
+      const knownFeatureIds = new Set(features.map((feature) => feature.id));
+      const unknown = batch.featureIds.filter((id) => id && !knownFeatureIds.has(id));
+      if (unknown.length > 0) {
+        throw new AiError(
+          "invalid-batch",
+          `Batch merujuk feature yang tidak ada: ${unknown.join(", ")}.`,
+          400,
+        );
+      }
+      const batchFeatures =
+        batch.featureIds.length > 0
+          ? features.filter((feature) => batch.featureIds.includes(feature.id))
+          : [];
+
+      const result = await generate({
+        step,
+        config,
+        schema: taskSchemaShape,
+        prompt: promptTasks(
+          definition,
+          batchFeatures.length > 0 ? batchFeatures : features,
+          architecture,
+          {
+            index: batch.index,
+            total: batch.total,
+            label: batch.label,
+            phases: batch.phases,
+            features: batchFeatures.map((feature) => ({ id: feature.id })),
+            knownTasks: batch.knownTasks,
+            nextTaskNumber: batch.nextTaskNumber,
+          },
+          uiDesign,
+          assetPlan,
+          dataModel,
+          api,
+        ),
+        demo: () => ({ tasks: [] }),
+        temperature: 0.4,
+      });
+      if (result.tasks.length === 0) {
+        warnings.push(`Batch task "${batch.label}" tidak menghasilkan task apa pun.`);
+      }
+      // Raw tasks: id rebasing and cross-batch normalization happen once on
+      // the client after every batch lands, keeping ids globally consistent.
+      return { step, payload: { tasks: result.tasks }, warnings };
     }
 
     case "agentInstructions": {

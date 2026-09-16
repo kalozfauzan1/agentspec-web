@@ -340,6 +340,25 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
         onStageStart: (stage) =>
           set({ busyStage: stage, progress: { label: stage, value: get().progress?.value ?? 0 } }),
         onProgress: (progress) => set({ progress }),
+        onTasksBatch: async (partial, batch) => {
+          await get().patchProject((current) => ({
+            ...current,
+            artifacts: { ...current.artifacts, tasks: partial },
+            artifactStatus: statusPatch(current, "tasks", {
+              status: "running",
+              error: null,
+              warnings: [],
+              updatedAt: null,
+            }),
+          }));
+          set({
+            busyStage: "tasks",
+            progress: {
+              label: `tasks ${batch.done}/${batch.total}`,
+              value: get().progress?.value ?? 0,
+            },
+          });
+        },
         onResult: async (stepResult) => {
           await get().patchProject((current) => ({
             ...current,
@@ -395,6 +414,22 @@ export const useProjectStore = create<ProjectStoreState>((set, get) => ({
         keys,
         onStageStart: (stage) => set({ busyStage: stage }),
         onProgress: (progress) => set({ progress }),
+        onTasksBatch: async (partial, batch) => {
+          await get().patchProject((current) => ({
+            ...current,
+            artifacts: { ...current.artifacts, tasks: partial },
+            artifactStatus: statusPatch(current, "tasks", {
+              status: "running",
+              error: null,
+              warnings: [],
+              updatedAt: null,
+            }),
+          }));
+          set({
+            busyStage: "tasks",
+            progress: { label: `tasks ${batch.done}/${batch.total}`, value: get().progress?.value ?? 0 },
+          });
+        },
         onResult: async (stepResult) => {
           await get().patchProject((current) => ({
             ...current,

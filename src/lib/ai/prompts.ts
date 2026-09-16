@@ -941,7 +941,18 @@ Return JSON:
     }
   ]
 }`,
-    user: `PROJECT DEFINITION\n${JSON.stringify(definition, null, 2)}
+    user: `PROJECT (essentials only — full definition already constrained earlier stages)
+${JSON.stringify(
+  {
+    name: definition.name,
+    summary: definition.summary,
+    platform: definition.platform,
+    users: definition.users,
+    implementation: definition.implementation,
+  },
+  null,
+  2,
+)}
 
 CANONICAL REQUIREMENTS (id + meaning — REFER, never redefine)
 ${JSON.stringify(
@@ -956,7 +967,7 @@ ${JSON.stringify(
   2,
 )}
 
-FEATURES
+FEATURES (this batch only)
 ${JSON.stringify(
   features.map((feature) => ({
     id: feature.id,
@@ -969,15 +980,17 @@ ${JSON.stringify(
   2,
 )}
 
-CANONICAL API OPERATIONS (reference operationId, never invent URLs)
+CANONICAL API OPERATIONS (this batch only — reference operationId, never invent URLs)
 ${JSON.stringify(
-  (api?.endpoints ?? []).map((endpoint) => ({
-    operationId: endpoint.operationId || endpoint.id,
-    method: endpoint.method,
-    path: endpoint.path,
-    requirementIds: endpoint.requirementIds ?? [],
-    featureId: endpoint.featureId,
-  })),
+  (api?.endpoints ?? [])
+    .filter((endpoint) => !endpoint.featureId || featureIds.has(endpoint.featureId))
+    .map((endpoint) => ({
+      operationId: endpoint.operationId || endpoint.id,
+      method: endpoint.method,
+      path: endpoint.path,
+      requirementIds: endpoint.requirementIds ?? [],
+      featureId: endpoint.featureId,
+    })),
   null,
   2,
 )}
@@ -999,9 +1012,8 @@ UI DESIGN (scoped to these features)
 ${JSON.stringify(
   uiDesign
     ? {
-        creativeConcept: uiDesign.creativeConcept,
-        approvedDependencies: uiDesign.approvedDependencies,
-        platformProfiles: uiDesign.platformProfiles,
+        approvedDependencies: uiDesign.approvedDependencies.map((dependency) => dependency.name),
+        platforms: uiDesign.platformProfiles.map((profile) => profile.platform),
         screens: uiDesign.screens
           .filter(
             (screen) =>
@@ -1017,7 +1029,6 @@ ${JSON.stringify(
             components: screen.components,
             assetIds: screen.assetIds,
           })),
-        visualQaRules: uiDesign.visualQaRules,
       }
     : "not generated",
   null,
@@ -1028,11 +1039,9 @@ ASSET PLAN (scoped to these features)
 ${JSON.stringify(
   assetPlan
     ? {
-        sourcePolicy: assetPlan.sourcePolicy,
-        iconSystems: assetPlan.iconSystems,
-        assets: assetPlan.assets.filter((asset) =>
-          asset.screenIds.some((screenId) => scopedScreenIds.has(screenId)),
-        ),
+        assets: assetPlan.assets
+          .filter((asset) => asset.screenIds.some((screenId) => scopedScreenIds.has(screenId)))
+          .map((asset) => ({ id: asset.id, destinationPath: asset.destinationPath })),
       }
     : "not generated",
   null,
