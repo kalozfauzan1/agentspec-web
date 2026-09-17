@@ -117,5 +117,21 @@ Key invariants that keep the package consistent (PRD §10, §27, §28, §34):
 | `AI_BASE_URL` | OpenAI-compatible base URL (default `https://9router.nalarlabs.tech/v1`) |
 | `AI_API_KEY` | API key; when empty the app runs in Demo mode |
 | `AI_MODEL` | Model name (default `first`) |
+| `AI_FALLBACK_MODELS` | Comma-separated models tried in order when the primary reports it is unavailable (quota exhausted or down). Unset: the bundled gateway uses its auto-routing model; empty: no fallback |
 
 `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_MODEL` are read as fallbacks.
+
+### Provider failures
+
+Long steps (tasks, feature specs) are the ones that hit provider limits, so the app
+treats them explicitly instead of retrying blindly:
+
+- A provider that answers `503` with a long `Retry-After` is **not** retried inside the
+  request; the step stops with the reset time so the wait is not wasted twice.
+- When a fallback model is configured, an unavailable primary model hands over to it
+  instead of failing the document, and the document reports which model produced it.
+- One step request has a fixed time budget (265s) shared by the main call and its repair
+  pass, so an answer plus a retry can never outlive the client timeout (285s).
+- Task batches are generated one HTTP request per batch; as soon as the provider reports
+  it is unavailable, the remaining batches are skipped and the tasks that already landed
+  are kept.

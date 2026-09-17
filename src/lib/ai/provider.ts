@@ -5,6 +5,8 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   mode: ProviderMode;
+  /** Models tried in order when the primary one is unavailable. */
+  fallbackModels?: string[];
 }
 
 export const DEFAULT_BASE_URL = "https://9router.nalarlabs.tech/v1";
@@ -79,6 +81,21 @@ export function serverProviderStatus() {
   };
 }
 
+/**
+ * Models to fall back to when the primary one reports that it is unavailable
+ * (quota exhausted, provider down). `AI_FALLBACK_MODELS` overrides the default;
+ * an empty value disables the fallback entirely.
+ */
+function envFallbackModels(baseUrl: string): string[] {
+  const configured = process.env.AI_FALLBACK_MODELS;
+  if (configured !== undefined) {
+    return configured.split(",").map((model) => model.trim()).filter(Boolean);
+  }
+  // The bundled gateway exposes an auto-routing model; only use it for the
+  // built-in endpoint so a custom provider never receives an unknown model name.
+  return baseUrl === DEFAULT_BASE_URL ? [DEFAULT_MODEL] : [];
+}
+
 export function resolveProvider(
   headers: Headers,
   requestedMode?: ProviderMode,
@@ -89,9 +106,10 @@ export function resolveProvider(
   const apiKey = overrideApiKey || envApiKey();
   const baseUrl = (overrideBaseUrl || envBaseUrl()).replace(/\/+$/, "");
   const model = overrideModel || envModel();
+  const fallbackModels = envFallbackModels(baseUrl);
 
   if (requestedMode === "demo") {
-    return { baseUrl, apiKey, model, mode: "demo" };
+    return { baseUrl, apiKey, model, mode: "demo", fallbackModels };
   }
 
   if (!apiKey) {
@@ -102,7 +120,7 @@ export function resolveProvider(
     );
   }
 
-  return { baseUrl, apiKey, model, mode: "live" };
+  return { baseUrl, apiKey, model, mode: "live", fallbackModels };
 }
 
 interface CallOptions {
@@ -112,6 +130,8 @@ interface CallOptions {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  /** Absolute `Date.now()` timestamp after which no new attempt may start. */
+  deadline?: number;
 }
 
 export interface ModelResult {
@@ -119,6 +139,8 @@ export interface ModelResult {
   finishReason: string | null;
   /** True when the provider stopped because it ran out of output tokens. */
   truncated: boolean;
+  /** Model that produced the answer — differs from the request after a fallback. */
+  model: string;
 }
 
 const RETRYABLE_STATUS = new Set([402, 408, 409, 425, 429, 500, 502, 503, 504]);
@@ -131,132 +153,192 @@ const RETRYABLE_STATUS = new Set([402, 408, 409, 425, 429, 500, 502, 503, 504]);
 const DEFAULT_MAX_TOKENS = 16_000;
 
 /**
- * Total provider budget must stay under the API route maxDuration (300s).
- * Per-attempt 90s × max 2 timeout retries ≈ 180s + backoff < 300s, so the
- * server returns a controlled JSON error instead of a raw gateway 504.
+ * A full 16k-token artifact takes ~110s on the bundled gateway, so the previous
+ * 90s cap aborted long answers mid-flight and threw them away — that abort is
+ * what surfaced as a "timeout" on the tasks step. Attempts now get 150s, and
+ * every attempt of a step draws from one budget that stays under the API route
+ * maxDuration (300s) and the client-side timeout (285s).
  */
-const PROVIDER_ATTEMPT_TIMEOUT_MS = 90_000;
-const PROVIDER_MAX_TIMEOUT_ATTEMPTS = 2;
+const PROVIDER_ATTEMPT_TIMEOUT_MS = 150_000;
+const PROVIDER_TOTAL_BUDGET_MS = 265_000;
+/** An attempt shorter than this cannot deliver a usable answer, so stop instead. */
+const PROVIDER_MIN_ATTEMPT_MS = 20_000;
+/** Attempts per model for retryable failures (5xx, empty answers). */
+const PROVIDER_ATTEMPTS_PER_MODEL = 2;
+/**
+ * A provider that asks us to wait longer than this is out of quota or down.
+ * Sleeping inside the request would only burn the step budget, so the next
+ * model is tried instead (and when none is left, the step fails fast).
+ */
+const PROVIDER_RETRY_AFTER_LIMIT_MS = 20_000;
+
+function candidateModels(config: ProviderConfig) {
+  const seen = new Set<string>();
+  return [config.model, ...(config.fallbackModels ?? [])]
+    .map((model) => model.trim())
+    .filter((model) => {
+      if (!model || seen.has(model)) return false;
+      seen.add(model);
+      return true;
+    });
+}
+
+/** `Retry-After` is either a number of seconds or an HTTP date. */
+function retryAfterMs(response: Response) {
+  const header = response.headers.get("retry-after")?.trim();
+  if (!header) return null;
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(header);
+  return Number.isNaN(date) ? null : Math.max(0, date - Date.now());
+}
+
+function unavailableMessage(model: string, waitMs: number) {
+  return (
+    `Provider AI tidak tersedia untuk model "${model}" dan baru pulih dalam ±${formatDuration(waitMs)}. ` +
+    "Percobaan dihentikan supaya waktu dan kuota tidak terbuang — coba lagi setelah waktu tersebut, " +
+    "atau pakai model lain di halaman Settings."
+  );
+}
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds} detik`;
+  return seconds === 0 ? `${minutes} menit` : `${minutes} menit ${seconds} detik`;
+}
 
 export async function callModel(config: ProviderConfig, options: CallOptions): Promise<ModelResult> {
-  const body = {
-    model: config.model,
-    messages: [
-      { role: "system", content: options.system },
-      { role: "user", content: options.user },
-    ],
-    temperature: options.temperature ?? 0.4,
-    max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
-    stream: false,
-    ...(options.json ? { response_format: { type: "json_object" } } : {}),
-  };
-
-  const attempts = 3;
+  const models = candidateModels(config);
+  const deadline = options.deadline ?? Date.now() + PROVIDER_TOTAL_BUDGET_MS;
   let lastError: unknown = null;
-  let timeoutAttempts = 0;
 
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      options.timeoutMs ?? PROVIDER_ATTEMPT_TIMEOUT_MS,
-    );
-    try {
-      const response = await fetch(`${config.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+  for (const model of models) {
+    for (let attempt = 1; attempt <= PROVIDER_ATTEMPTS_PER_MODEL; attempt += 1) {
+      const remaining = deadline - Date.now();
+      const attemptTimeout = Math.min(options.timeoutMs ?? PROVIDER_ATTEMPT_TIMEOUT_MS, remaining);
+      if (attemptTimeout < PROVIDER_MIN_ATTEMPT_MS) {
+        throw lastError instanceof AiError
+          ? lastError
+          : new AiError(
+              "timeout",
+              `Provider AI melebihi batas waktu ${formatDuration(PROVIDER_TOTAL_BUDGET_MS)}. Coba generate ulang dokumen ini saja (tombol retry per dokumen).`,
+              504,
+            );
+      }
 
-      if (!response.ok) {
-        const raw = await response.text();
-        // Gateway timeouts (504) from an overloaded provider should not be
-        // retried at full force — back off longer so the next attempt lands
-        // after the provider recovers.
-        if (RETRYABLE_STATUS.has(response.status) && attempt < attempts) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), attemptTimeout);
+      try {
+        const response = await fetch(`${config.baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: options.system },
+              { role: "user", content: options.user },
+            ],
+            temperature: options.temperature ?? 0.4,
+            max_tokens: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+            stream: false,
+            ...(options.json ? { response_format: { type: "json_object" } } : {}),
+          }),
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          const raw = await response.text();
+          if (!RETRYABLE_STATUS.has(response.status)) {
+            throw new AiError(
+              "provider-error",
+              `Provider AI menolak permintaan (${response.status}): ${truncate(raw, 400)}`,
+              response.status,
+            );
+          }
+          const retryAfter = retryAfterMs(response);
+          if (retryAfter !== null && retryAfter > PROVIDER_RETRY_AFTER_LIMIT_MS) {
+            lastError = new AiError(
+              "provider-unavailable",
+              unavailableMessage(model, retryAfter),
+              503,
+            );
+            break;
+          }
           lastError = new AiError(
             "provider-busy",
             response.status === 504
-              ? "Provider AI kehabisan waktu (504). Menunggu lebih lama lalu mencoba ulang…"
-              : `Provider merespons ${response.status}. Mencoba ulang…`,
+              ? "Provider AI kehabisan waktu (504)."
+              : `Provider AI merespons ${response.status}.`,
             response.status,
           );
-          await wait(attempt * 1500 + Math.floor(Math.random() * 1000));
-          continue;
+          if (attempt < PROVIDER_ATTEMPTS_PER_MODEL) {
+            await wait(attempt * 1500 + Math.floor(Math.random() * 1000));
+            continue;
+          }
+          break;
         }
-        throw new AiError(
-          "provider-error",
-          `Provider AI menolak permintaan (${response.status}): ${truncate(raw, 400)}`,
-          response.status,
-        );
-      }
 
-      const payload = (await response.json()) as {
-        choices?: {
-          message?: { content?: string | null };
-          finish_reason?: string | null;
-        }[];
-        error?: { message?: string };
-      };
+        const payload = (await response.json()) as {
+          choices?: {
+            message?: { content?: string | null };
+            finish_reason?: string | null;
+          }[];
+          error?: { message?: string };
+        };
 
-      if (payload.error?.message) {
-        throw new AiError("provider-error", payload.error.message, 502);
-      }
+        if (payload.error?.message) {
+          lastError = new AiError("provider-error", payload.error.message, 502);
+          if (attempt < PROVIDER_ATTEMPTS_PER_MODEL) {
+            await wait(attempt * 1000);
+            continue;
+          }
+          break;
+        }
 
-      const choice = payload.choices?.[0];
-      const content = choice?.message?.content;
-      const finishReason = choice?.finish_reason ?? null;
+        const choice = payload.choices?.[0];
+        const content = choice?.message?.content;
+        const finishReason = choice?.finish_reason ?? null;
 
-      if (!content || !content.trim()) {
-        if (attempt < attempts) {
+        if (!content || !content.trim()) {
           lastError = new AiError("empty-response", "Model mengembalikan respons kosong.", 502);
-          await wait(attempt * 1000);
-          continue;
+          if (attempt < PROVIDER_ATTEMPTS_PER_MODEL) {
+            await wait(attempt * 1000);
+            continue;
+          }
+          break;
         }
-        throw new AiError("empty-response", "Model mengembalikan respons kosong.", 502);
-      }
 
-      return {
-        content,
-        finishReason,
-        truncated: finishReason === "length" || finishReason === "max_tokens",
-      };
-    } catch (error) {
-      if (error instanceof AiError && error.httpStatus === 502) {
+        return {
+          content,
+          finishReason,
+          truncated: finishReason === "length" || finishReason === "max_tokens",
+          model,
+        };
+      } catch (error) {
+        if (error instanceof AiError) throw error;
+        if (error instanceof Error && error.name === "AbortError") {
+          // A stalled model rarely recovers inside the same request, so report
+          // it and let the next model take over instead of waiting again.
+          lastError = new AiError(
+            "timeout",
+            `Model "${model}" tidak merespons dalam ${formatDuration(attemptTimeout)}. Coba generate ulang dokumen ini saja (tombol retry per dokumen), atau pakai model lain di halaman Settings.`,
+            504,
+          );
+          break;
+        }
         lastError = error;
-        if (attempt < attempts) {
+        if (attempt < PROVIDER_ATTEMPTS_PER_MODEL) {
           await wait(attempt * 1000);
           continue;
         }
-        throw error;
+      } finally {
+        clearTimeout(timer);
       }
-      if (error instanceof AiError) throw error;
-      if (error instanceof Error && error.name === "AbortError") {
-        timeoutAttempts += 1;
-        lastError = new AiError(
-          "timeout",
-          "Provider AI melebihi batas waktu 90 detik. Coba generate ulang dokumen ini saja (tombol retry per dokumen).",
-          504,
-        );
-        // Timeouts already consumed ~90s each; cap retries so the total stays
-        // under the server maxDuration instead of cascading into a gateway 504.
-        if (attempt < attempts && timeoutAttempts < PROVIDER_MAX_TIMEOUT_ATTEMPTS) {
-          await wait(attempt * 2000);
-          continue;
-        }
-        throw lastError;
-      }
-      lastError = error;
-      if (attempt < attempts) {
-        await wait(attempt * 1000);
-        continue;
-      }
-    } finally {
-      clearTimeout(timeout);
     }
   }
 

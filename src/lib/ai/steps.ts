@@ -260,6 +260,24 @@ const STEP_MAX_TOKENS: Partial<Record<StepKey, number>> = {
 const COMPACT_INSTRUCTION =
   "The previous attempt was cut off because it exceeded the output token limit. Return the COMPLETE JSON again, matching the required shape exactly. Keep every required key and every list item, but write each text field as one short sentence (at most about 15 words). Do not add commentary.";
 
+/**
+ * One step request must answer before the API route maxDuration (300s) and the
+ * client-side timeout (285s). The budget is shared by the main call and the
+ * repair pass: a long answer plus a repair used to overrun the request, so the
+ * client aborted and threw away both responses.
+ */
+const STEP_BUDGET_MS = 265_000;
+
+interface GenerateParams<T> {
+  step: StepKey;
+  config: ProviderConfig;
+  schema: z.ZodType<T>;
+  prompt: { system: string; user: string };
+  demo: () => unknown;
+  temperature?: number;
+  warnings?: string[];
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const batches: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -268,15 +286,8 @@ function chunk<T>(items: T[], size: number): T[][] {
   return batches.length > 0 ? batches : [[]];
 }
 
-async function generate<T>(params: {
-  step: StepKey;
-  config: ProviderConfig;
-  schema: z.ZodType<T>;
-  prompt: { system: string; user: string };
-  demo: () => unknown;
-  temperature?: number;
-}): Promise<T> {
-  const { step, config, schema, prompt, demo, temperature } = params;
+async function generateStep<T>(params: GenerateParams<T>): Promise<T> {
+  const { step, config, schema, prompt, demo, temperature, warnings } = params;
 
   if (config.mode === "demo") {
     const parsed = schema.safeParse(demo());
@@ -290,16 +301,26 @@ async function generate<T>(params: {
     return parsed.data;
   }
 
+  const requestedModel = modelForStep(config.model, step);
+  const deadline = Date.now() + STEP_BUDGET_MS;
+  const noteFallback = (usedModel: string) => {
+    if (!warnings || usedModel === requestedModel) return;
+    const message = `Model "${requestedModel}" sedang tidak tersedia, jadi dokumen ini dibuat dengan model cadangan "${usedModel}".`;
+    if (!warnings.includes(message)) warnings.push(message);
+  };
+
   const result = await callModel(
-    { ...config, model: modelForStep(config.model, step) },
+    { ...config, model: requestedModel },
     {
       system: prompt.system,
       user: prompt.user,
       json: true,
       temperature,
       maxTokens: STEP_MAX_TOKENS[step],
+      deadline,
     },
   );
+  noteFallback(result.model);
 
   return parseWithSchema(schema, result.content, {
     step,
@@ -309,15 +330,17 @@ async function generate<T>(params: {
       // required shape; weak providers truncate long answers even when they
       // report finish_reason "stop", so compaction happens on every retry.
       const repaired = await callModel(
-        { ...config, model: modelForStep(config.model, step) },
+        { ...config, model: requestedModel },
         {
           system: `${prompt.system}\n\n${COMPACT_INSTRUCTION}`,
           user: `${prompt.user}\n\nNOTE: the previous attempt failed (${problem}). Answer again, complete and compact.`,
           json: true,
           temperature: 0,
           maxTokens: STEP_MAX_TOKENS[step] ?? 12_000,
+          deadline,
         },
       );
+      noteFallback(repaired.model);
       return repaired.content;
     },
   });
@@ -343,6 +366,10 @@ export async function runStep(
 ): Promise<StepResult> {
   const config = providerFromRequest(request, baseConfig);
   const warnings: string[] = [];
+  // Every provider call belongs to this step's warnings, so a model fallback is
+  // reported to the user instead of happening silently.
+  const generate = <T,>(params: Omit<GenerateParams<T>, "warnings">) =>
+    generateStep({ ...params, warnings });
 
   switch (step) {
     case "analyze": {

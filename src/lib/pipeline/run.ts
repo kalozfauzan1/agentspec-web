@@ -75,6 +75,12 @@ export class StepError extends Error {
 const STEP_TIMEOUT_MS = 285_000;
 const STEP_RETRYABLE_CODES = new Set(["step-failed", "provider-busy", "timeout", "gateway-timeout"]);
 const STEP_RETRYABLE_STATUS = new Set([502, 503, 504]);
+/**
+ * Errors that will not improve by asking again: the provider already told us
+ * when it comes back, so a second request only wastes the user's time and the
+ * remaining quota.
+ */
+const STEP_TERMINAL_CODES = new Set(["provider-unavailable"]);
 
 export async function callStep<T>(
   step: string,
@@ -118,6 +124,7 @@ export async function callStep<T>(
         lastError = new StepError(friendlyStepMessage(response.status, code, message), code);
         if (
           attempt < 2 &&
+          !STEP_TERMINAL_CODES.has(code) &&
           (STEP_RETRYABLE_STATUS.has(response.status) || STEP_RETRYABLE_CODES.has(code))
         ) {
           await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
@@ -130,15 +137,12 @@ export async function callStep<T>(
     } catch (error) {
       if (error instanceof StepError) throw error;
       if (error instanceof Error && error.name === "AbortError") {
-        lastError = new StepError(
+        // Repeating a request that already ran out the client budget would only
+        // add another full wait before failing the same way.
+        throw new StepError(
           `Langkah "${step}" melebihi batas waktu. Coba generate ulang dokumen ini saja.`,
           "gateway-timeout",
         );
-        if (attempt < 2) {
-          await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
-          continue;
-        }
-        throw lastError;
       }
       throw error;
     } finally {
@@ -295,6 +299,10 @@ export async function runTasksBatched(
   const collected: ImplementationTask[] = [];
   const warnings: string[] = [];
   const failedBatches: string[] = [];
+  // Set once the provider reports it is unavailable. Every remaining batch
+  // would fail the same way, so the run stops and keeps what already landed
+  // instead of spending minutes on requests that cannot succeed.
+  let unavailable: StepError | null = null;
 
   for (const stage of stages) {
     const knownTasks = collected.map((task) => ({ id: task.id, title: task.title }));
@@ -329,6 +337,9 @@ export async function runTasksBatched(
         failedBatches.push(batch.label);
         warnings.push(`Batch task "${batch.label}" gagal: ${message}`);
         results[batchIndex] = [];
+        if (error instanceof StepError && error.code === "provider-unavailable") {
+          unavailable = unavailable ?? error;
+        }
       }
     };
 
@@ -339,7 +350,7 @@ export async function runTasksBatched(
     for (let w = 0; w < Math.min(2, stage.length); w += 1) {
       workers.push(
         (async () => {
-          while (next < stage.length) {
+          while (next < stage.length && !unavailable) {
             const current = next;
             next += 1;
             await runOne(current);
@@ -359,9 +370,18 @@ export async function runTasksBatched(
       total,
       label: stage[stage.length - 1].label,
     });
+
+    if (unavailable) {
+      warnings.push(
+        `Provider AI tidak tersedia, jadi ${total - done} batch task yang tersisa dilewati. ` +
+          "Tasks yang sudah jadi tersimpan — generate ulang Tasks setelah provider pulih.",
+      );
+      break;
+    }
   }
 
   if (collected.length === 0) {
+    if (unavailable) throw unavailable;
     throw new StepError(
       "Model tidak menghasilkan task apa pun. Coba generate ulang Tasks saja.",
       "empty-artifact",
