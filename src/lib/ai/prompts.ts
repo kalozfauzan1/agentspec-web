@@ -1425,27 +1425,27 @@ export function promptEdit(input: {
     definition: `Update the Project Definition itself. Change only what the instruction requires, keep every other field intact, and keep the structure identical to the input. Return the FULL updated definition.`,
     architecture: `Update the architecture specification. Obey the decision-source rules: never turn a user decision into a recommendation, and never invent a vendor the definition does not allow.`,
     prd: `Update only the PRD document. Keep the required section structure and keep it consistent with the project definition.`,
-    features: `Update the feature specifications. Return the FULL list of features with every other feature preserved. Keep requirement ids stable unless the change makes an id wrong; never renumber ids that other documents already reference.`,
+    features: `Update the feature specifications with a delta. Put every added or changed full feature under "featureChanges.upsert" and explicit deleted feature IDs under "featureChanges.removeIds"; omit unchanged items. Keep requirement ids stable unless the change makes an id wrong; never renumber ids that other documents already reference.`,
     flows: `Update the user flows. Return the FULL list of flows.`,
     uiDesign: `Update the UI design specification. Return the whole specification. Keep token names stable, keep every screen that is not affected exactly as it is, and keep the design implementable with the stack recorded in the definition.`,
     assetPlan: `Update the asset plan. Return the whole plan. Keep asset ids stable, keep every source legally safe and free, keep destination paths repository-local, and keep every asset attached to a screen that exists in the UI design.`,
     dataModel: `Update the data model. Return the full entity and relationship list.`,
     api: `Update the API specification. Keep endpoint paths stable unless the instruction requires otherwise.`,
-    tasks: `Update the implementation task list. Return the full list. Keep dependency and reference ids pointing at tasks and requirements that still exist, and never break the phase order of the implementation strategy.`,
+    tasks: `Update the implementation task list with a delta. Put every added or changed full task under "taskChanges.upsert" and explicit deleted task IDs under "taskChanges.removeIds"; omit unchanged items. Keep dependency and reference ids pointing at tasks and requirements that still exist, and never break the phase order of the implementation strategy.`,
     agentInstructions: `Update AGENTS.md. Keep all required sections and keep it consistent with the project definition and the task phases.`,
   };
 
   const responseShape: Record<EditTarget, string> = {
     definition: `{ "summary": "…", "affected": ["prd", "features"], "definition": { …full definition… } }`,
     prd: `{ "summary": "…", "affected": [], "document": { "title": "…", "summary": "…", "sections": [ … ] } }`,
-    features: `{ "summary": "…", "affected": [], "features": [ … ] }`,
+    features: `{ "summary": "…", "affected": [], "featureChanges": { "upsert": [ …full added or changed features… ], "removeIds": ["feature-id"] } }`,
     flows: `{ "summary": "…", "affected": [], "flows": [ … ] }`,
     uiDesign: `{ "summary": "…", "affected": [], "uiDesign": { … } }`,
     assetPlan: `{ "summary": "…", "affected": [], "assetPlan": { … } }`,
     architecture: `{ "summary": "…", "affected": [], "architecture": { … } }`,
     dataModel: `{ "summary": "…", "affected": [], "dataModel": { … } }`,
     api: `{ "summary": "…", "affected": [], "api": { … } }`,
-    tasks: `{ "summary": "…", "affected": [], "tasks": [ … ] }`,
+    tasks: `{ "summary": "…", "affected": [], "taskChanges": { "upsert": [ …full added or changed tasks… ], "removeIds": ["TASK-001"] } }`,
     agentInstructions: `{ "summary": "…", "affected": [], "document": { … } }`,
   };
 

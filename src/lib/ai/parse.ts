@@ -54,42 +54,50 @@ export async function parseWithSchema<T>(
   const truncated = Boolean(options?.truncated);
 
   let value: unknown;
+  let problem = "";
+  let firstJsonInvalid = false;
   try {
     value = extractJson(raw);
   } catch (error) {
-    const problem = error instanceof Error ? error.message : "JSON tidak valid.";
+    problem = error instanceof Error ? error.message : "JSON tidak valid.";
     if (!repair) throw error;
-
-    const repairedRaw = await repair({ problem, truncated });
-    try {
-      return schema.parse(extractJson(repairedRaw));
-    } catch (secondError) {
-      throw new AiError(
-        "invalid-json",
-        `Output model tidak bisa dibaca bahkan setelah diminta ulang (${stepName}): ${problem}`,
-        502,
-      );
-    }
+    firstJsonInvalid = true;
   }
 
-  const first = schema.safeParse(value);
-  if (first.success) return first.data;
+  if (!firstJsonInvalid) {
+    const first = schema.safeParse(value);
+    if (first.success) return first.data;
+    problem = summarizeIssues(first.error);
+  }
 
-  const problem = summarizeIssues(first.error);
-  if (repair) {
-    const repairedRaw = await repair({ problem, truncated });
-    const second = schema.safeParse(extractJson(repairedRaw));
-    if (second.success) return second.data;
+  if (!repair) {
     throw new AiError(
       "invalid-schema",
-      `Output AI tidak sesuai skema setelah perbaikan (${stepName}): ${summarizeIssues(second.error)}`,
+      `Output AI tidak sesuai skema (${stepName}): ${problem}`,
       502,
     );
   }
 
+  const repairedRaw = await repair({ problem, truncated });
+  let repairedValue: unknown;
+  try {
+    repairedValue = extractJson(repairedRaw);
+  } catch (secondError) {
+    const secondProblem = secondError instanceof Error
+      ? secondError.message
+      : "JSON tidak valid.";
+    throw new AiError(
+      "invalid-json",
+      `Output model tidak bisa dibaca setelah diminta ulang (${stepName}). Percobaan pertama: ${problem} Percobaan ulang: ${secondProblem}`,
+      502,
+    );
+  }
+
+  const second = schema.safeParse(repairedValue);
+  if (second.success) return second.data;
   throw new AiError(
     "invalid-schema",
-    `Output AI tidak sesuai skema (${stepName}): ${problem}`,
+    `Output AI tidak sesuai skema setelah perbaikan (${stepName}). Percobaan pertama: ${problem} Percobaan ulang: ${summarizeIssues(second.error)}`,
     502,
   );
 }

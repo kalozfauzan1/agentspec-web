@@ -13,7 +13,11 @@ import {
   featureSpecSchema,
   ideaAnalysisSchema,
   projectDefinitionSchema,
+  requirementSchema,
+  stringList,
   taskSchema,
+  taskTypeSchema,
+  uiSurfaceSchema,
   uiDesignSpecSchema,
   userFlowSchema,
   type ArtifactKey,
@@ -46,8 +50,9 @@ import {
   normalizeFeatures,
   normalizeTasks,
   normalizeUiDesign,
+  slugId,
 } from "./normalize";
-import { parseWithSchema } from "./parse";
+import { parseWithSchema, summarizeIssues } from "./parse";
 import {
   EDIT_TARGETS,
   PRD_SECTION_TITLES,
@@ -132,20 +137,141 @@ export interface StepResult {
   warnings: string[];
 }
 
-const editResponseSchema = z.object({
-  summary: z.string().default(""),
-  affected: z.array(z.string()).default([]),
-  definition: projectDefinitionSchema.optional(),
-  document: documentSchema.optional(),
-  features: z.array(featureSpecSchema).optional(),
-  flows: z.array(userFlowSchema).optional(),
-  uiDesign: uiDesignSpecSchema.optional(),
-  assetPlan: assetPlanSpecSchema.optional(),
-  architecture: architectureSpecSchema.optional(),
-  dataModel: dataModelSpecSchema.optional(),
-  api: apiSpecSchema.optional(),
-  tasks: z.array(taskSchema).optional(),
+function canonicalTaskId(value: string) {
+  const raw = value.toUpperCase().trim();
+  const digits = /(\d+)/.exec(raw)?.[1];
+  return digits ? `TASK-${String(Number(digits)).padStart(3, "0")}` : raw;
+}
+
+function listChangeIssues(changes: {
+  upsert: Array<{ id: string }>;
+  removeIds: string[];
+}, canonicalizeId: (id: string) => string) {
+  const issues: Array<{ path: Array<string | number>; message: string }> = [];
+  const upsertIds = new Set<string>();
+  changes.upsert.forEach((item, index) => {
+    const id = canonicalizeId(item.id);
+    if (upsertIds.has(id)) {
+      issues.push({
+        path: ["upsert", index, "id"],
+        message: `ID "${item.id}" muncul lebih dari sekali di upsert.`,
+      });
+    }
+    upsertIds.add(id);
+  });
+
+  const removeIds = new Set<string>();
+  changes.removeIds.forEach((id, index) => {
+    const canonicalId = canonicalizeId(id);
+    if (removeIds.has(canonicalId)) {
+      issues.push({
+        path: ["removeIds", index],
+        message: `ID "${id}" muncul lebih dari sekali di removeIds.`,
+      });
+    }
+    if (upsertIds.has(canonicalId)) {
+      issues.push({
+        path: ["removeIds", index],
+        message: `ID "${id}" tidak boleh ada di upsert dan removeIds sekaligus.`,
+      });
+    }
+    removeIds.add(canonicalId);
+  });
+  return issues;
+}
+
+const nonEmptyIdSchema = z.string().refine((id) => id.trim().length > 0, {
+  message: "ID tidak boleh kosong.",
 });
+
+const featureUpsertSchema = z.object({
+  id: nonEmptyIdSchema,
+  prefix: z.string().min(2).optional(),
+  name: z.string().min(1).optional(),
+  purpose: z.string().optional(),
+  actors: stringList.optional(),
+  mainFlow: stringList.optional(),
+  requirements: z.array(requirementSchema).optional(),
+  businessRules: stringList.optional(),
+  edgeCases: stringList.optional(),
+  acceptanceCriteria: stringList.optional(),
+  userFacing: z.boolean().optional(),
+  uiSurfaces: z.array(uiSurfaceSchema).optional(),
+  mediaRequirements: stringList.optional(),
+});
+
+const taskUpsertSchema = z.object({
+  id: nonEmptyIdSchema,
+  title: z.string().min(1).optional(),
+  goal: z.string().optional(),
+  type: taskTypeSchema.optional(),
+  phase: z.string().min(1).optional(),
+  featureId: z.string().optional(),
+  dependencies: stringList.optional(),
+  references: stringList.optional(),
+  apiOperations: stringList.optional(),
+  contextDocs: stringList.optional(),
+  requirements: stringList.optional(),
+  implementationNotes: stringList.optional(),
+  uiStates: stringList.optional(),
+  screenIds: stringList.optional(),
+  assetIds: stringList.optional(),
+  acceptanceCriteria: stringList.optional(),
+  validationCommands: stringList.optional(),
+  optional: z.boolean().optional(),
+});
+
+const featureChangesSchema = z.object({
+  upsert: z.array(featureUpsertSchema).default([]),
+  removeIds: z.array(nonEmptyIdSchema).default([]),
+}).superRefine((changes, context) => {
+  listChangeIssues(changes, (id) => slugId(id, "")).forEach((issue) => {
+    context.addIssue({ code: "custom", ...issue });
+  });
+});
+
+const taskChangesSchema = z.object({
+  upsert: z.array(taskUpsertSchema).default([]),
+  removeIds: z.array(nonEmptyIdSchema).default([]),
+}).superRefine((changes, context) => {
+  listChangeIssues(changes, canonicalTaskId).forEach((issue) => {
+    context.addIssue({ code: "custom", ...issue });
+  });
+});
+
+function makeEditResponseSchema(target?: EditTarget) {
+  return z.object({
+    summary: z.string().default(""),
+    affected: z.array(z.string()).default([]),
+    definition: projectDefinitionSchema.optional(),
+    document: documentSchema.optional(),
+    featureChanges: featureChangesSchema.optional(),
+    flows: z.array(userFlowSchema).optional(),
+    uiDesign: uiDesignSpecSchema.optional(),
+    assetPlan: assetPlanSpecSchema.optional(),
+    architecture: architectureSpecSchema.optional(),
+    dataModel: dataModelSpecSchema.optional(),
+    api: apiSpecSchema.optional(),
+    taskChanges: taskChangesSchema.optional(),
+  }).superRefine((result, context) => {
+    if (target === "features" && !result.featureChanges) {
+      context.addIssue({
+        code: "custom",
+        path: ["featureChanges"],
+        message: "Delta featureChanges wajib disertakan untuk edit features.",
+      });
+    }
+    if (target === "tasks" && !result.taskChanges) {
+      context.addIssue({
+        code: "custom",
+        path: ["taskChanges"],
+        message: "Delta taskChanges wajib disertakan untuk edit tasks.",
+      });
+    }
+  });
+}
+
+const editResponseSchema = makeEditResponseSchema();
 
 const FIELD_TO_ARTIFACTS: Record<string, ArtifactKey[]> = {
   name: ["prd", "agentInstructions"],
@@ -275,6 +401,7 @@ interface GenerateParams<T> {
   prompt: { system: string; user: string };
   demo: () => unknown;
   temperature?: number;
+  maxTokens?: number;
   warnings?: string[];
 }
 
@@ -287,7 +414,7 @@ function chunk<T>(items: T[], size: number): T[][] {
 }
 
 async function generateStep<T>(params: GenerateParams<T>): Promise<T> {
-  const { step, config, schema, prompt, demo, temperature, warnings } = params;
+  const { step, config, schema, prompt, demo, temperature, maxTokens, warnings } = params;
 
   if (config.mode === "demo") {
     const parsed = schema.safeParse(demo());
@@ -302,6 +429,7 @@ async function generateStep<T>(params: GenerateParams<T>): Promise<T> {
   }
 
   const requestedModel = modelForStep(config.model, step);
+  const effectiveMaxTokens = maxTokens ?? STEP_MAX_TOKENS[step] ?? 16_000;
   const deadline = Date.now() + STEP_BUDGET_MS;
   const noteFallback = (usedModel: string) => {
     if (!warnings || usedModel === requestedModel) return;
@@ -316,7 +444,7 @@ async function generateStep<T>(params: GenerateParams<T>): Promise<T> {
       user: prompt.user,
       json: true,
       temperature,
-      maxTokens: STEP_MAX_TOKENS[step],
+      maxTokens: effectiveMaxTokens,
       deadline,
     },
   );
@@ -336,7 +464,7 @@ async function generateStep<T>(params: GenerateParams<T>): Promise<T> {
           user: `${prompt.user}\n\nNOTE: the previous attempt failed (${problem}). Answer again, complete and compact.`,
           json: true,
           temperature: 0,
-          maxTokens: STEP_MAX_TOKENS[step] ?? 12_000,
+          maxTokens: effectiveMaxTokens,
           deadline,
         },
       );
@@ -944,10 +1072,11 @@ export async function runStep(
       const result = await generate({
         step,
         config,
-        schema: editResponseSchema,
+        schema: makeEditResponseSchema(target),
         prompt: promptEdit({ target, instruction, definition, payload }),
         demo: () => demoEdit(target, instruction, request),
         temperature: 0.3,
+        maxTokens: STEP_MAX_TOKENS[target] ?? 16_000,
       });
 
       return { step, payload: buildEditPatch(target, result, request), warnings };
@@ -1011,8 +1140,15 @@ function buildEditPatch(
   if (target === "agentInstructions" && result.document) {
     patch.agentInstructions = normalizeDocument(result.document, "AGENTS.md");
   }
-  if (target === "features" && result.features) {
-    patch.features = normalizeFeatures(result.features, request.definition ?? null);
+  if (target === "features" && result.featureChanges) {
+    const merged = mergeEditChanges(
+      request.features ?? [],
+      result.featureChanges,
+      "features",
+      (id) => slugId(id, ""),
+      featureSpecSchema,
+    );
+    patch.features = normalizeFeatures(merged, request.definition ?? null);
   }
   if (target === "flows" && result.flows) {
     patch.flows = result.flows;
@@ -1032,14 +1168,86 @@ function buildEditPatch(
   if (target === "api" && result.api) {
     patch.api = normalizeApi(result.api, request.features ?? []);
   }
-  if (target === "tasks" && result.tasks) {
-    patch.tasks = normalizeTasks(result.tasks, request.features ?? [], request.definition ?? null);
+  if (target === "tasks" && result.taskChanges) {
+    const merged = mergeEditChanges(
+      request.tasks ?? [],
+      result.taskChanges,
+      "tasks",
+      canonicalTaskId,
+      taskSchema,
+    );
+    patch.tasks = normalizeTasks(merged, request.features ?? [], request.definition ?? null);
   }
 
   // A features edit can invalidate task references, so tasks follow along.
   if (target === "features" && !affected.includes("tasks")) affected.push("tasks");
 
   return { summary, affected: ARTIFACT_KEYS.filter((key) => affected.includes(key)), patch };
+}
+
+function mergeEditChanges<T extends { id: string }, U extends { id: string }>(
+  current: T[],
+  changes: { upsert: U[]; removeIds: string[] },
+  label: string,
+  canonicalizeId: (id: string) => string,
+  itemSchema: z.ZodType<T>,
+): T[] {
+  const currentById = new Map<string, T>();
+  for (const item of current) {
+    const id = canonicalizeId(item.id);
+    if (currentById.has(id)) {
+      throw new AiError(
+        "invalid-edit-delta",
+        `Daftar ${label} saat ini memiliki ID duplikat "${item.id}" sehingga edit tidak aman diterapkan.`,
+        502,
+      );
+    }
+    currentById.set(id, item);
+  }
+
+  const removals = new Set<string>();
+  for (const rawId of changes.removeIds) {
+    const id = canonicalizeId(rawId);
+    if (!currentById.has(id)) {
+      throw new AiError(
+        "invalid-edit-delta",
+        `ID ${label} "${rawId}" tidak ditemukan dan tidak dapat dihapus.`,
+        502,
+      );
+    }
+    removals.add(id);
+  }
+
+  const replacements = new Map(changes.upsert.map((item) => [canonicalizeId(item.id), item]));
+  const merged = current
+    .filter((item) => !removals.has(canonicalizeId(item.id)))
+    .map((item) => {
+      const replacement = replacements.get(canonicalizeId(item.id));
+      return replacement ? { ...item, ...replacement, id: item.id } : item;
+    });
+
+  for (const item of changes.upsert) {
+    if (currentById.has(canonicalizeId(item.id))) continue;
+    const parsed = itemSchema.safeParse(item);
+    if (!parsed.success) {
+      throw new AiError(
+        "invalid-edit-delta",
+        `Item baru pada delta ${label} tidak valid: ${summarizeIssues(parsed.error)}`,
+        502,
+      );
+    }
+    merged.push(parsed.data);
+  }
+
+  const validated = z.array(itemSchema).safeParse(merged);
+  if (!validated.success) {
+    throw new AiError(
+      "invalid-edit-delta",
+      `Hasil delta ${label} tidak valid: ${summarizeIssues(validated.error)}`,
+      502,
+    );
+  }
+  return validated.data;
 }
 
 function dedupeIssues(
@@ -1164,13 +1372,17 @@ function demoEdit(target: EditTarget, instruction: string, request: StepRequest)
   if (target === "agentInstructions" && request.agentInstructions) {
     return { summary, affected: [], document: request.agentInstructions };
   }
-  if (target === "features") return { summary, affected: [], features: request.features ?? [] };
+  if (target === "features") {
+    return { summary, affected: [], featureChanges: { upsert: [], removeIds: [] } };
+  }
   if (target === "flows") return { summary, affected: [], flows: request.flows ?? [] };
   if (target === "uiDesign") return { summary, affected: [], uiDesign: request.uiDesign ?? undefined };
   if (target === "assetPlan") return { summary, affected: [], assetPlan: request.assetPlan ?? undefined };
   if (target === "architecture") return { summary, affected: [], architecture: request.architecture ?? undefined };
   if (target === "dataModel") return { summary, affected: [], dataModel: request.dataModel ?? undefined };
   if (target === "api") return { summary, affected: [], api: request.api ?? undefined };
-  if (target === "tasks") return { summary, affected: [], tasks: request.tasks ?? [] };
+  if (target === "tasks") {
+    return { summary, affected: [], taskChanges: { upsert: [], removeIds: [] } };
+  }
   return { summary, affected: [] };
 }
